@@ -112,7 +112,7 @@ class DatasetArguments:
 @dataclass
 class BertTrainingArguments(TrainingArguments):
     dataloader_num_workers: int = 4
-    per_device_train_batch_size: int = 128  # BERT-tiny는 작은 모델이므로 배치 크기 증가 가능
+    per_device_train_batch_size: int = 16  # BERT-tiny는 작은 모델이므로 배치 크기 증가 가능
     per_device_eval_batch_size: int = 1
     gradient_accumulation_steps: int = 1  # 작은 모델이므로 gradient accumulation을 낮춰도 됨
     seq_length: int = 128  # BERT-tiny는 짧은 문장에 최적화되어 있으므로 128로 조정
@@ -143,6 +143,6 @@ class BertTrainingArguments(TrainingArguments):
     )
 
     enable_eval: bool = field(
-    default=False,
+    default=True,
     metadata={"help": "If False, disables evaluation during training."}
     )
