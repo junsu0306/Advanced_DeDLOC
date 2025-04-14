@@ -322,15 +322,16 @@ def main():
             partial_stale=True,
             opt=opt,
             dht=dht,
-            prefix=collaboration_args_dict.pop("experiment_prefix"),
-            target_batch_size=adjusted_target_batch_size,
-            batch_size_per_step=total_batch_size_per_step,
             scheduler=scheduler,
-            start=True,  # ✅ 필수 인자 추가
-            # hive args
-            # compression_type=..., etc. (아래 lines 처럼)
+            prefix=collaboration_args_dict.pop("experiment_prefix"),
             compression_type=hivemind.utils.CompressionType.Value(collaboration_args_dict.pop("compression")),
-            **collaboration_args_dict,
+            batch_size_per_step=total_batch_size_per_step,
+            throughput=collaboration_args_dict.pop("bandwidth"),  # ✅ 명시적으로 전달
+            target_batch_size=adjusted_target_batch_size,
+            client_mode=collaboration_args_dict.pop("client_mode"),
+            verbose=True,
+            start=True,
+            **collaboration_args_dict,  # 나머지 averaging 관련 인자들
         )
     else:
         logger.info("Using normal hivemind.CollaborativeOptimizer.")
