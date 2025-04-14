@@ -143,6 +143,6 @@ class BertTrainingArguments(TrainingArguments):
     )
 
     enable_eval: bool = field(
-    default=True,
+    default=False,
     metadata={"help": "If False, disables evaluation during training."}
     )
