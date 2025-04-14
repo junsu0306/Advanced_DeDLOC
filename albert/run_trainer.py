@@ -187,20 +187,21 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     return_future=True,
                 )
                  # ✅ 강제 평가: eval_every 스텝마다 수행
-                if self.enable_eval and self.trainer is not None and self.collaborative_optimizer.local_step % self.eval_every == 0:
+                if not self.enable_eval:
+                    logger.debug("🔒 Evaluation disabled (enable_eval=False)")
+                else:
+                    if self.trainer is not None and self.collaborative_optimizer.local_step % self.eval_every == 0:
+                        idx = random.randint(0, 29)
+                        eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
+                        eval_result = self.trainer.evaluate(eval_dataset=eval_dataset)
+                        logger.info(f"📊 Eval result (subset {idx}): {eval_result}")
 
-                
-                    idx = random.randint(0, 29)
-                    eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
-                    eval_result = self.trainer.evaluate(eval_dataset=eval_dataset)
-                    logger.info(f"📊 Eval result (subset {idx}): {eval_result}")
-        
-                    wandb.log({
-                        "eval_loss": eval_result.get("eval_loss"),
-                        "eval_accuracy": eval_result.get("eval_accuracy"),
-                        "eval_subset": idx,
-                        "step": self.collaborative_optimizer.local_step,
-        })
+                        wandb.log({
+                            "eval_loss": eval_result.get("eval_loss"),
+                            "eval_accuracy": eval_result.get("eval_accuracy"),
+                            "eval_subset": idx,
+                            "step": self.collaborative_optimizer.local_step,
+                        })
     
         self.samples = self.collaborative_optimizer.local_samples_accumulated
 
