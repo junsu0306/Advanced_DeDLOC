@@ -326,6 +326,7 @@ def main():
             target_batch_size=adjusted_target_batch_size,
             batch_size_per_step=total_batch_size_per_step,
             scheduler=scheduler,
+            start=True,  # ✅ 필수 인자 추가
             # hive args
             # compression_type=..., etc. (아래 lines 처럼)
             compression_type=hivemind.utils.CompressionType.Value(collaboration_args_dict.pop("compression")),
