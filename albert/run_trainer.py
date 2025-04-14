@@ -122,6 +122,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         local_public_key: bytes,
         statistics_expiration: float,
         trainer=None,  # ✅ 추가
+        enable_eval=True,
     ):
         super().__init__()
         self.model = model
@@ -136,6 +137,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.total_samples_processed = 0
         self.trainer = trainer  # ✅ 추가
         self.eval_every = 500    # ✅ 평가 간격 (원하면 조정)
+        self.enable_eval = enable_eval
 
     def on_train_begin(
         self, args: TrainingArguments, state: transformers.TrainerState, control: transformers.TrainerControl, **kwargs
@@ -185,7 +187,8 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     return_future=True,
                 )
                  # ✅ 강제 평가: eval_every 스텝마다 수행
-                if self.trainer is not None and self.collaborative_optimizer.local_step % 500 == 0:
+                if self.enable_eval and self.trainer is not None and self.collaborative_optimizer.local_step % self.eval_every == 0:
+
                 
                     idx = random.randint(0, 29)
                     eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
@@ -268,9 +271,11 @@ def main():
 
 
      # ⬇️ 여기에 추가
-    training_args.evaluation_strategy = "steps"
-    training_args.eval_steps = 500 # 평가 주기 (500 스텝마다)
-    training_args.do_eval = True
+    # evaluation 설정
+    training_args.evaluation_strategy = "steps" if training_args.enable_eval else "no"
+    training_args.eval_steps = 500
+    training_args.do_eval = training_args.enable_eval  # 이게 핵심!
+
     training_args.report_to = ["wandb"]
 
     logger.info(f"Found {len(collaboration_args.initial_peers)} initial peers: {collaboration_args.initial_peers}")
@@ -369,7 +374,6 @@ def main():
         return {"accuracy": float(accuracy)}
 
 
-
     class TrainerWithIndependentShuffling(Trainer):
         def get_train_dataloader(self) -> DataLoader:
             torch.manual_seed(hash(local_public_key))
@@ -379,6 +383,7 @@ def main():
     callback = CollaborativeCallback(
         dht, collaborative_optimizer, model, local_public_key, statistics_expiration,
         trainer=None  # placeholder, 나중에 할당할 예정
+        enable_eval=training_args.enable_eval  # ✅ 여기에 플래그 전달
 )
 
 # Trainer 인스턴스 생성

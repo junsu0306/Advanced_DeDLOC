@@ -141,3 +141,8 @@ class BertTrainingArguments(TrainingArguments):
         default=False,
         metadata={"help": "If True, uses a 1-step delayed gradient update for partial staleness."}
     )
+
+    enable_eval: bool = field(
+    default=True,
+    metadata={"help": "If False, disables evaluation during training."}
+    )
