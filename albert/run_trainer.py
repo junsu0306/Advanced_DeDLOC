@@ -381,11 +381,12 @@ def main():
     
     # 먼저 callback 인스턴스를 만든다
     callback = CollaborativeCallback(
-        dht, collaborative_optimizer, model, local_public_key, statistics_expiration,
-        trainer=None  # placeholder, 나중에 할당할 예정
-        enable_eval=training_args.enable_eval  # ✅ 여기에 플래그 전달
-)
+    dht, collaborative_optimizer, model, local_public_key, statistics_expiration,
+    trainer=None,
+    enable_eval=training_args.enable_eval  # ✅ 여기에 플래그 전달
+    )
 
+    
 # Trainer 인스턴스 생성
     trainer = TrainerWithIndependentShuffling(
         model=model,
