@@ -3,11 +3,11 @@ import random
 import os
 
 # 경로 설정
-DATASET_PATH = "./data/bert_tiny_tokenized_wikitext103"  # 이건 너의 기준에 맞게 조정 가능
+DATASET_PATH = "./data/bert_tiny_tokenized_wikitext103" 
 SPLIT_NAME = "validation"
 OUTPUT_DIR = "./eval_subsets"
-NUM_SUBSETS = 30
-SAMPLES_PER_SUBSET = 100
+NUM_SUBSETS = 20
+SAMPLES_PER_SUBSET = 200
 SEED = 42
 
 
