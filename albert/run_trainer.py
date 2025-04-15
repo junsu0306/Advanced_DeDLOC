@@ -190,11 +190,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
                 if not self.enable_eval:
                     logger.debug("🔒 Evaluation disabled (enable_eval=False)")
                 else:
-                     if (
-                        self.trainer is not None
-                        and self.collaborative_optimizer.local_step != 0
-                        and self.collaborative_optimizer.local_step % self.eval_every == 0
-                    ):
+                    if self.trainer is not None and self.collaborative_optimizer.local_step % self.eval_every == 0:
                         idx = random.randint(0, 29)
                         eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
                         eval_result = self.trainer.evaluate(eval_dataset=eval_dataset)
