@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import logging
 import os
 from dataclasses import asdict
@@ -213,12 +211,14 @@ def main():
         raise ValueError("Please specify at least one network endpoint in initial peers.")
 
     collaboration_args_dict = asdict(collaboration_args)
+    collaboration_args_dict.pop("wandb_project", None)  # ✅ grpc 에러 방지용 제거
+
     setup_logging(training_args)
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-   #  ALBERT → BERT-tiny 변경
+    # ALBERT → BERT-tiny 변경
     config = BertConfig.from_pretrained(dataset_args.config_path, cache_dir=dataset_args.cache_dir)
     tokenizer = BertTokenizerFast.from_pretrained(dataset_args.tokenizer_path, cache_dir=dataset_args.cache_dir)
     model = get_model(training_args, config, tokenizer)
@@ -251,6 +251,7 @@ def main():
         throughput=collaboration_args_dict.pop("bandwidth"),
         target_batch_size=adjusted_target_batch_size,
         client_mode=collaboration_args_dict.pop("client_mode"),
+        use_pairwise=True,
         verbose=True,
         start=True,
         auxiliary=True,
