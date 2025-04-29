@@ -34,7 +34,7 @@ RUN cd DeDLOC-BERT-tiny && rm -rf ~/.cache/pip
 
 RUN pip install --upgrade pip
 
-RUN pip install hivemind==0.9.9.post1 \
+RUN pip install git+https://github.com/WKJ-00/hivemind.git@main#egg=hivemind \
     && pip install protobuf==3.20.3 \
     && pip install 'accelerate>=0.26.0' \
     && pip install 'transformers[torch]' \
