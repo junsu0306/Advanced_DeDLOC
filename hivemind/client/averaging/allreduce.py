@@ -207,7 +207,7 @@ class AllReduceRunner(AllReduceProtocol, averaging_pb2_grpc.DecentralizedAveragi
         weights: Tuple[float, ...],
         gathered: Dict[Endpoint, Any],
         return_deltas: bool = False,
-        use_pairwise: bool = False,
+        use_pairwise: bool = True,
         **kwargs,
     ):
         super().__init__(
