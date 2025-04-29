@@ -15,8 +15,7 @@ from hivemind.dht.crypto import RSASignatureValidator
 from hivemind.dht.schema import BytesWithPublicKey, SchemaValidator
 from hivemind.optim.base import DecentralizedOptimizerBase
 from hivemind.optim.performance_ema import PerformanceEMA
-from hivemind.utils import Endpoint, ValueWithExpiration, get_dht_time, get_logger
-
+from hivemind.utils import Endpoint, get_dht_time, get_logger
 
 logger = get_logger(__name__)
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, '_LRScheduler', None)
@@ -33,10 +32,10 @@ class CollaborationState:
     next_fetch_time: float
 
     @property
-    def ready_for_step(self):
+    def ready_for_step(self) -> bool:
         return self.samples_accumulated >= self.target_batch_size or get_dht_time() >= self.eta_next_step
 
-    def register_step(self, local_step: int):
+    def register_step(self, local_step: int) -> None:
         self.optimizer_step = max(local_step, self.optimizer_step)
         self.samples_accumulated = 0
         self.eta_next_step = float('inf')
@@ -57,92 +56,115 @@ class TrainingProgressSchema(BaseModel):
 
 class CollaborativeOptimizer(DecentralizedOptimizerBase):
     """
-    An optimizer that performs model updates after collaboratively accumulating a target (large) batch size across peers
+    An optimizer that performs model updates after collaboratively accumulating a target batch size across peers.
 
-    These optimizers use DHT to track how much progress did the collaboration make towards target batch size.
-    Once enough samples were accumulated, optimizers will compute a weighted average of their statistics.
-
-    :note: This optimizer behaves unlike regular pytorch optimizers in two ways:
-
-    - calling .step will periodically zero-out gradients w.r.t. model parameters after each step
-    - it may take multiple .step calls without updating model parameters, waiting for peers to accumulate enough samples
-
-    :param opt: a standard pytorch optimizer, preferably a large-batch one such as LAMB, LARS, etc.
-    :param dht: a running hivemind.DHT daemon connected to other peers
-    :param prefix: a common prefix for all metadata stored by CollaborativeOptimizer in the DHT
-    :param target_batch_size: perform optimizer step after all peers collectively accumulate this many samples
-    :param batch_size_per_step: before each call to .step, user should accumulate gradients over this many samples
-    :param min_refresh_period: wait for at least this many seconds before fetching new collaboration state
-    :param max_refresh_period: wait for at most this many seconds before fetching new collaboration state
-    :param default_refresh_period: if no peers are detected, attempt to fetch collaboration state this often (seconds)
-    :param expected_drift_peers: assume that this many new peers can join between steps
-    :param expected_drift_rate: assumes that this fraction of current collaboration can join/leave between steps
-    :note: the expected collaboration drift parameters are used to adjust the frequency with which this optimizer will
-      refresh the collaboration-wide statistics (to avoid missing the moment when to run the next step)
-    :param bandwidth: peer's network bandwidth for the purpose of load balancing (recommended: internet speed in mbps)
-    :param step_tolerance: a peer can temporarily be delayed by this many steps without being deemed out of sync
-    :param performance_ema_alpha: smoothing value used to estimate this peer's performance (training samples per second)
-    :param averaging_expiration: peer's requests for averaging will be valid for this many seconds
-    :param metadata_expiration: peer's metadata (e.g. samples processed) is stored onto DHT for this many seconds
-    :param averaging_timeout: if an averaging step hangs for this long, it will be cancelled.
-    :param scheduler: if specified, use this scheduler to update optimizer learning rate
-    :param reuse_grad_buffers: if True, use model's .grad buffers for gradient accumulation.
-      This is more memory efficient, but it requires that the user does *NOT* call model/opt zero_grad at all
-    :param accumulate_grads_on: if specified, accumulate gradients on this device. By default, this will use the same
-     device as model parameters. One can specify a different device (e.g. 'cpu' vs 'cuda') to save device memory at
-     the cost of extra time per step. If reuse_gradient_accumulators is True, this parameter has no effect.
-    :param client_mode: if True, runs training without incoming connections, in a firewall-compatible mode
-    :param kwargs: additional parameters forwarded to DecentralizedAverager
-    :note: if you are using CollaborativeOptimizer with a lr_scheduler, it is recommended to pass this scheduler
-      explicitly into this class. Otherwise, scheduler may not be synchronized between peers.
+    추가 파라미터:
+      - use_pairwise: bool = False
+          True로 설정 시, 항상 2-페어(pairwise) 방식으로만 averaging이 수행됩니다.
     """
 
-    def __init__(self, opt: torch.optim.Optimizer, *, dht: DHT, prefix: str, target_batch_size: int,
-                 batch_size_per_step: Optional[int] = None, scheduler: Optional[LRSchedulerBase] = None,
-                 min_refresh_period: float = 0.5, max_refresh_period: float = 30, default_refresh_period: float = 3,
-                 expected_drift_peers: float = 3, expected_drift_rate: float = 0.2, performance_ema_alpha: float = 0.1,
-                 metadata_expiration: float = 60.0, averaging_timeout: Optional[float] = None, step_tolerance: int = 1,
-                 reuse_grad_buffers: bool = False, accumulate_grads_on: Optional[torch.device] = None,
-                 client_mode: bool = False, verbose: bool = False, **kwargs):
+    def __init__(self,
+                 opt: torch.optim.Optimizer,
+                 *,
+                 dht: DHT,
+                 prefix: str,
+                 target_batch_size: int,
+                 batch_size_per_step: Optional[int] = None,
+                 scheduler: Optional[LRSchedulerBase] = None,
+                 min_refresh_period: float = 0.5,
+                 max_refresh_period: float = 30.0,
+                 default_refresh_period: float = 3.0,
+                 expected_drift_peers: float = 3.0,
+                 expected_drift_rate: float = 0.2,
+                 performance_ema_alpha: float = 0.1,
+                 metadata_expiration: float = 60.0,
+                 averaging_timeout: Optional[float] = None,
+                 step_tolerance: int = 1,
+                 reuse_grad_buffers: bool = False,
+                 accumulate_grads_on: Optional[torch.device] = None,
+                 client_mode: bool = False,
+                 verbose: bool = False,
+                 use_pairwise: bool = True,
+                 **kwargs):
         super().__init__(opt, dht)
 
+        # DHT 스키마 & 서명 설정
         signature_validator = RSASignatureValidator()
         self._local_public_key = signature_validator.local_public_key
-        dht.add_validators([SchemaValidator(TrainingProgressSchema, prefix=prefix),
-                            signature_validator])
+        dht.add_validators([
+            SchemaValidator(TrainingProgressSchema, prefix=prefix),
+            signature_validator
+        ])
 
-        if reuse_grad_buffers and accumulate_grads_on is not None:
-            logger.warning("Setting 'accumulate_grads_on' has no effect if reuse_grad_buffers=True")
-        self.prefix, self.scheduler = prefix, scheduler
-        self.target_batch_size, self.batch_size_per_step = target_batch_size, batch_size_per_step
-        self.min_refresh_period, self.max_refresh_period, self.default_refresh_period =\
-            min_refresh_period, max_refresh_period, default_refresh_period
-        self.expected_drift_peers, self.expected_drift_rate = expected_drift_peers, expected_drift_rate
-        self.averaging_timeout, self.metadata_expiration = averaging_timeout, metadata_expiration
-        self._grads, self.reuse_grad_buffers, self.accumulate_grads_on = None, reuse_grad_buffers, accumulate_grads_on
-        self.client_mode, self.step_tolerance = client_mode, step_tolerance
-        self.status_loglevel = logging.INFO if verbose else logging.DEBUG
-        self.averager = self._make_averager(**kwargs)
-
-        self.training_progress_key = f"{self.prefix}_progress"
-        self.local_samples_accumulated = 0  # a number of local samples accumulated since last optimizer update
-        self.local_steps_accumulated = 0  # a number of calls to step() since last optimizer update
+        # 파라미터 저장
+        self.prefix = prefix
+        self.scheduler = scheduler
+        self.target_batch_size = target_batch_size
+        self.batch_size_per_step = batch_size_per_step
+        self.min_refresh_period = min_refresh_period
+        self.max_refresh_period = max_refresh_period
+        self.default_refresh_period = default_refresh_period
+        self.expected_drift_peers = expected_drift_peers
+        self.expected_drift_rate = expected_drift_rate
         self.performance_ema = PerformanceEMA(alpha=performance_ema_alpha)
+        self.metadata_expiration = metadata_expiration
+        self.averaging_timeout = averaging_timeout
+        self.step_tolerance = step_tolerance
+        self.reuse_grad_buffers = reuse_grad_buffers
+        self.accumulate_grads_on = accumulate_grads_on
+        self.client_mode = client_mode
+        self.status_loglevel = logging.INFO if verbose else logging.DEBUG
+
+        # **Pairwise** 플래그
+        self.use_pairwise = use_pairwise
+
+        # 내부 변수 초기화
+        self._grads = None
+        self.local_samples_accumulated = 0
+        self.local_steps_accumulated = 0
         self.last_step_time = None
 
+        # Averager 생성 (pairwise 설정 반영)
+        self.averager = self._make_averager(**kwargs)
+
+        # Collaboration 상태 관리
+        self.training_progress_key = f"{self.prefix}_progress"
         self.collaboration_state = self.fetch_collaboration_state()
-        self.lock_collaboration_state, self.collaboration_state_updated = Lock(), Event()
-        self.lock_local_progress, self.should_report_progress = Lock(), Event()
-        self.progress_reporter = Thread(target=self.report_training_progress, daemon=True, name=f"{self}.reporter")
+        self.lock_collaboration_state = Lock()
+        self.collaboration_state_updated = Event()
+        self.lock_local_progress = Lock()
+        self.should_report_progress = Event()
+
+        # 백그라운드 쓰레드
+        self.progress_reporter = Thread(
+            target=self.report_training_progress, daemon=True, name=f"{self}.reporter"
+        )
         self.progress_reporter.start()
-        self.collaboration_state_updater = Thread(target=self.check_collaboration_state_periodically, daemon=True,
-                                                  name=f"{self}.collaboration_state_updater")
+
+        self.collaboration_state_updater = Thread(
+            target=self.check_collaboration_state_periodically, daemon=True,
+            name=f"{self}.collaboration_state_updater"
+        )
         self.collaboration_state_updater.start()
 
-    def _make_averager(self, **kwargs):
-        return TrainingAverager(self.opt, dht=self.dht, average_parameters=True, average_gradients=True,
-                                prefix=f"{self.prefix}_averaging", allreduce_timeout=self.averaging_timeout,
-                                listen=not self.client_mode, **kwargs)
+    def _make_averager(self, **kwargs) -> TrainingAverager:
+        """
+        use_pairwise=True 일 때 항상 target_group_size=2로 고정된 pairwise 매칭을 수행합니다.
+        """
+        if self.use_pairwise:
+            # 무조건 페어 단위로만 그룹을 짜도록 강제
+            kwargs.update(target_group_size=2, min_group_size=2)
+
+        return TrainingAverager(
+            opt=self.opt,
+            average_parameters=True,
+            average_gradients=True,
+            use_pairwise=self.use_pairwise,
+            prefix=f"{self.prefix}_averaging",
+            allreduce_timeout=self.averaging_timeout,
+            listen=not self.client_mode,
+            **kwargs
+        )
 
     @property
     def local_step(self) -> int:
