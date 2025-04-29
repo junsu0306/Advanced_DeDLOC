@@ -122,6 +122,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         local_public_key: bytes,
         statistics_expiration: float,
         trainer=None,  # ✅ 추가
+        enable_eval=True,
     ):
         super().__init__()
         self.model = model
@@ -136,6 +137,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.total_samples_processed = 0
         self.trainer = trainer  # ✅ 추가
         self.eval_every = 500    # ✅ 평가 간격 (원하면 조정)
+        self.enable_eval = enable_eval
 
     def on_train_begin(
         self, args: TrainingArguments, state: transformers.TrainerState, control: transformers.TrainerControl, **kwargs
@@ -167,7 +169,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     step=self.collaborative_optimizer.local_step,
                     samples_per_second=samples_per_second,
                     samples_accumulated=self.samples,
-                    loss=self.loss,
+                    loss=float(self.loss or 0.0),
                     mini_steps=self.steps,
                 )
                 logger.info(f"Step {self.collaborative_optimizer.local_step}")
@@ -185,23 +187,25 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     return_future=True,
                 )
                  # ✅ 강제 평가: eval_every 스텝마다 수행
-                if self.trainer is not None and self.collaborative_optimizer.local_step % self.eval_every == 0:
-                    # ✅ 무작위로 100개만 샘플링해서 평가
-                    full_dataset = self.trainer.eval_dataset
-                    num_samples = min(100, len(full_dataset))
-                    sampled_indices = random.sample(range(len(full_dataset)), num_samples)
-                    sampled_eval_dataset = torch.utils.data.Subset(full_dataset, sampled_indices)
+                if not self.enable_eval:
+                    logger.debug("🔒 Evaluation disabled (enable_eval=False)")
+                else:
+                    if self.trainer is not None and self.collaborative_optimizer.local_step % self.eval_every == 0:
+                        idx = random.randint(0, 19)
+                        eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
+                        eval_result = self.trainer.evaluate(eval_dataset=eval_dataset)
+                        logger.info(f"📊 Eval result (subset {idx}): {eval_result}")
 
-                    eval_result = self.trainer.evaluate(eval_dataset=sampled_eval_dataset)
-                    logger.info(f"📊 Eval result (subset 100): {eval_result}")
-                    wandb.log(
-                        {
-                        "eval_loss": eval_result.get("eval_loss"),
-                        "eval_accuracy": eval_result.get("eval_accuracy"),
-                        "step": self.collaborative_optimizer.local_step,
-                        }
-    )
+                        wandb.log({
+                            "eval_loss": eval_result.get("eval_loss"),
+                            "eval_accuracy": eval_result.get("eval_accuracy"),
+                            "eval_subset": idx,
+                            "step": self.collaborative_optimizer.local_step,
+                        })
+    
         self.samples = self.collaborative_optimizer.local_samples_accumulated
+         # ✅ 여기!
+        torch.cuda.empty_cache()
 
         return control
 
@@ -246,6 +250,10 @@ class NoOpScheduler(LRSchedulerBase):
 def main():
     parser = HfArgumentParser((BertTrainingArguments, DatasetArguments, CollaborationArguments))
     training_args, dataset_args, collaboration_args = parser.parse_args_into_dataclasses()
+
+    training_args.fp16 = True
+    training_args.fp16_full_eval = True  # ✅ 여기 추가
+    
     # ✅ collaboration_args_dict 생성
     collaboration_args_dict = asdict(collaboration_args)
 
@@ -266,9 +274,11 @@ def main():
 
 
      # ⬇️ 여기에 추가
-    training_args.evaluation_strategy = "steps"
-    training_args.eval_steps = 500 # 평가 주기 (500 스텝마다)
-    training_args.do_eval = True
+    # evaluation 설정
+    training_args.evaluation_strategy = "steps" if training_args.enable_eval else "no"
+    training_args.eval_steps = 500
+    training_args.do_eval = training_args.enable_eval  # 이게 핵심!
+
     training_args.report_to = ["wandb"]
 
     logger.info(f"Found {len(collaboration_args.initial_peers)} initial peers: {collaboration_args.initial_peers}")
@@ -318,16 +328,19 @@ def main():
         logger.info("Using PartialStaleCollaborativeOptimizer (1-step delay).")
         collaborative_optimizer = PartialStaleCollaborativeOptimizer(
             partial_stale=True,
+            use_pairwise=True,
             opt=opt,
             dht=dht,
-            prefix=collaboration_args_dict.pop("experiment_prefix"),
-            target_batch_size=adjusted_target_batch_size,
-            batch_size_per_step=total_batch_size_per_step,
             scheduler=scheduler,
-            # hive args
-            # compression_type=..., etc. (아래 lines 처럼)
+            prefix=collaboration_args_dict.pop("experiment_prefix"),
             compression_type=hivemind.utils.CompressionType.Value(collaboration_args_dict.pop("compression")),
-            **collaboration_args_dict,
+            batch_size_per_step=total_batch_size_per_step,
+            throughput=collaboration_args_dict.pop("bandwidth"),  # ✅ 명시적으로 전달
+            target_batch_size=adjusted_target_batch_size,
+            client_mode=collaboration_args_dict.pop("client_mode"),
+            verbose=True,
+            start=True,
+            **collaboration_args_dict,  # 나머지 averaging 관련 인자들
         )
     else:
         logger.info("Using normal hivemind.CollaborativeOptimizer.")
@@ -341,6 +354,7 @@ def main():
             throughput=collaboration_args_dict.pop("bandwidth"),
             target_batch_size=adjusted_target_batch_size,
             client_mode=collaboration_args_dict.pop("client_mode"),
+            use_pairwise=True,
             verbose=True,
             start=True,
             **collaboration_args_dict,
@@ -349,9 +363,16 @@ def main():
 
     def compute_metrics_mlm(eval_pred):
         import numpy as np
-        logits, labels = eval_pred  # (batch_size, seq_len, vocab_size), (batch_size, seq_len)
+        logits, labels = eval_pred
+
+    # ✅ 명확히 GPU에서 CPU로 변환
+        if hasattr(logits, "cpu"):
+            logits = logits.cpu().numpy()
+        if hasattr(labels, "cpu"):
+            labels = labels.cpu().numpy()
+
         predictions = np.argmax(logits, axis=-1)
-        mask = labels != -100  # -100 위치 무시
+        mask = labels != -100
         correct = (predictions[mask] == labels[mask]).sum()
         total = mask.sum()
         accuracy = correct / total if total > 0 else 0.0
@@ -365,10 +386,12 @@ def main():
     
     # 먼저 callback 인스턴스를 만든다
     callback = CollaborativeCallback(
-        dht, collaborative_optimizer, model, local_public_key, statistics_expiration,
-        trainer=None  # placeholder, 나중에 할당할 예정
-)
+    dht, collaborative_optimizer, model, local_public_key, statistics_expiration,
+    trainer=None,
+    enable_eval=training_args.enable_eval  # ✅ 여기에 플래그 전달
+    )
 
+    
 # Trainer 인스턴스 생성
     trainer = TrainerWithIndependentShuffling(
         model=model,
