@@ -1,5 +1,3 @@
-""" A background process that averages your tensors with peers """
-
 from __future__ import annotations
 
 import asyncio
@@ -10,154 +8,234 @@ import os
 import threading
 import uuid
 import weakref
+import time
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import asdict
-from typing import Sequence, Optional, Tuple, Any, Union, Dict, AsyncIterator
+from typing import Sequence, Optional, Tuple, Any, Dict, AsyncIterator
 
 import grpc
 from grpc._cython.cygrpc import InternalError
 import torch
 import numpy as np
 
-from hivemind.dht import DHT, DHTID
+from hivemind.dht import DHT, DHTID, get_dht_time
 from hivemind.client.averaging.allreduce import AllReduceRunner, AllreduceException, GroupID, AveragingMode
 from hivemind.client.averaging.load_balancing import load_balance_peers
 from hivemind.client.averaging.matchmaking import Matchmaking, MatchmakingException
-from hivemind.client.averaging.group_info import GroupInfo
+from hivemind.client.averaging.group_info import GroupInfo, PeerInfo
 from hivemind.proto import averaging_pb2, averaging_pb2_grpc, runtime_pb2
+from hivemind.proto.averaging_pb2 import BandwidthProbeRequest, BandwidthProbeResponse
 from hivemind.utils.grpc import ChannelCache, GRPC_KEEPALIVE_OPTIONS, split_for_streaming, combine_from_streaming
 from hivemind.utils.compression import serialize_torch_tensor, deserialize_torch_tensor
 from hivemind.utils.asyncio import anext, achain, aiter, switch_to_uvloop
-from hivemind.utils.timed_storage import get_dht_time, ValueWithExpiration, DHTExpiration
+from hivemind.utils.timed_storage import ValueWithExpiration, DHTExpiration
 from hivemind.utils.serializer import MSGPackSerializer, SerializerBase
 from hivemind.utils import Endpoint, Port, MPFuture, get_logger, TensorDescriptor
 
 # flavour types
-StreamCallToLeader = grpc.aio.UnaryStreamCall[averaging_pb2.JoinRequest, averaging_pb2.MessageFromLeader]
-DataForGather = Any
+data_for_gather = Any
 logger = get_logger(__name__)
 DEFAULT_CHUNK_SIZE_BYTES = 2 ** 16
 
 
-class DecentralizedAverager(mp.Process, averaging_pb2_grpc.DecentralizedAveragingServicer):
+def is_power_of_two(n):
+    return (n != 0) and (n & (n - 1) == 0)
+
+
+class DecentralizedAverager(
+        mp.Process,
+        averaging_pb2_grpc.DecentralizedAveragingServicer,
+        averaging_pb2_grpc.BandwidthProbeServicer):
     """
-
-    Parameter averaging service. A trainer can run this service in background to periodically average his parameters
-    with other trainers. The averaging pattern is chosen so that (1) you only need to average with a small
-    group of peers at a time, but (2) all trainers will converge to global average in a logarithmic number of steps.
-
-    :param averaged_tensors: a sequence of pytorch tensors that will be averaged in each all-reduce
-    :param dht: a DHT node that will be used to find groups
-    :param start: if True, starts the background process immediately
-
-    :param prefix: a shared prefix for all group keys
-    :param target_group_size: attempts to form groups with up to this many peers (recommended: a power of 2, e.g. 16)
-    :param initial_group_bits: a string of bits ('0' and '1') that define the initial group key (bucket index)
-    :param averaging_expiration: attempt to find a group for this many seconds, otherwise try again
-      note - this expiration time only applies to looking for group, passing tensors in allreduce may take more time
-    :param compression_type: optionally compress tensors with this compression algorithm before sending them to peers
-    :param allreduce_timeout: spend at most this many seconds for allreduce (after group is formed)
-    :param averaging_alpha: optional "learning rate" for averaging. If specified, local parameters will be shifted
-      towards the (estimated) average by this coefficient. By default, local parameters are set equal to average.
-    :param request_timeout: when looking for group, wait for a response from leader for at most this many seconds.
-    :note: request_timeout must be smaller than averaging_expiration to avoid potential deadlocks.
-    :param chunk_size_bytes: tensors for AllReduce will be divided into chunks of this size (to improve gRPC throughput)
-    :param throughput: if specified, this value represents the network bandwidth available to averager.
-          By default, the averager is assumed to have the average bandwidth of his group.
-          If throughput == 0, averager will rely on its groupmates to do all the averaging.
-    :param listen: if True (default), this averager will accept incoming requests from other peers and perform allreduce
-            if False, the averager will register as a freeloader and attempt to fetch vectors from other averagers
-    :param listen_on: network interface, e.g. "0.0.0.0:1337" or "localhost:*" (* means pick any port) or "[::]:7654"
-    :param channel_options: options for grpc.aio.insecure_channel, e.g. [('grpc.enable_retries', 0)]
-          see https://grpc.github.io/grpc/core/group__grpc__arg__keys.html for a list of all options
-    :param kwargs: extra parameters forwarded to grpc.aio.server
-    :param auxiliary: if this flag is specified, averager.step will only assist others without sending
-          local tensors for averaging
-    :param allow_state_sharing: if set to True, other peers can download this peer's state. Can be overwritten
-      with averager.allow_state_sharing = True / False
-
-    Example:
-
-    >>> averager = DecentralizedAverager(...)
-    >>> with averager.get_tensors() as tensors:
-    >>>     # run some code, modify tensors if necessary
-    >>>     tensors[0] += 1
-    >>> # do not use tensors after the lock is released
-    >>> metadata = averager.step(gather=dict(my_batch_size=32))
-    >>> # run averaging once (in-place), gather metadata from groupmates
-    >>> with averager.get_tensors() as tensors_after_averaging:
-    >>>     pass # use the averaged tensors
+    Adaptive pair-wise allreduce with on-start bandwidth probing via rpc_ping.
     """
-    _matchmaking: Matchmaking
-    _pending_group_assembled: asyncio.Event
     serializer = MSGPackSerializer
 
-    def __init__(self, averaged_tensors: Sequence[torch.Tensor], dht: DHT, *, start: bool,
-                 prefix: str, target_group_size: int, min_group_size: int = 2, initial_group_bits: Optional[str] = None,
-                 averaging_expiration: float = 15, request_timeout: float = 3, chunk_size_bytes: int = 2 ** 16,
-                 allreduce_timeout: Optional[float] = None, averaging_alpha: float = 1.0,
-                 compression_type: runtime_pb2.CompressionType = runtime_pb2.CompressionType.NONE,
-                 throughput: Optional[float] = None, min_vector_size: int = 0,
-                 auxiliary: bool = False, allow_state_sharing: Optional[bool] = None,
-                 listen: bool = True, listen_on: Endpoint = '0.0.0.0:*', daemon: bool = True,
-                 channel_options: Optional[Sequence[Tuple[str, Any]]] = None, **kwargs):
-        assert '.' not in prefix, "group prefix must be a string without trailing '.'"
-        assert throughput is None or (throughput >= 0 and np.isfinite(np.float32(throughput))), \
-            "throughput must be a non-negative float32"
-        if not is_power_of_two(target_group_size):
-            logger.warning("It is recommended to set target_group_size to a power of 2.")
-        assert initial_group_bits is None or all(bit in '01' for bit in initial_group_bits)
-        assert listen or not auxiliary, "auxiliary peers must accept incoming connections"
-
+    def __init__(
+        self,
+        averaged_tensors: Sequence[torch.Tensor],
+        dht: DHT,
+        *,
+        start: bool,
+        use_pairwise: bool = False,
+        prefix: str,
+        target_group_size: int,
+        min_group_size: int = 2,
+        initial_group_bits: Optional[str] = None,
+        averaging_expiration: float = 15,
+        request_timeout: float = 3,
+        chunk_size_bytes: int = 2 ** 16,
+        allreduce_timeout: Optional[float] = None,
+        averaging_alpha: float = 1.0,
+        compression_type: runtime_pb2.CompressionType = runtime_pb2.CompressionType.NONE,
+        throughput: Optional[float] = None,
+        min_vector_size: int = 0,
+        auxiliary: bool = False,
+        allow_state_sharing: Optional[bool] = None,
+        listen: bool = True,
+        listen_on: Endpoint = '0.0.0.0:*',
+        daemon: bool = True,
+        channel_options: Optional[Sequence[Tuple[str, Any]]] = None,
+        probe_size: int = 1024 * 1024,
+        **kwargs,
+    ):
         super().__init__()
         self.dht = dht
         self.listen, self.listen_on, self.kwargs = listen, listen_on, kwargs
-        if not self.listen:
-            self.mode = AveragingMode.CLIENT
-        elif auxiliary:
-            self.mode = AveragingMode.AUX
-        else:
-            self.mode = AveragingMode.NODE
+        self.probe_size = probe_size
+        self.prefix = prefix
+        # default throughput until probed
+        self._throughput = throughput or 0.0
 
-        self.channel_options = channel_options
+        # Averaging parameters
+        self.use_pairwise = use_pairwise
+        self.matchmaking_kwargs = dict(
+            prefix=prefix,
+            initial_group_bits=initial_group_bits,
+            target_group_size=target_group_size,
+            min_group_size=min_group_size,
+            averaging_expiration=averaging_expiration,
+            request_timeout=request_timeout,
+        )
+        self.allreduce_kwargs = dict(
+            compression_type=compression_type,
+            chunk_size_bytes=chunk_size_bytes,
+            min_vector_size=min_vector_size,
+            use_pairwise=self.use_pairwise,
+        )
+        self._averaging_alpha, self._allreduce_timeout = averaging_alpha, allreduce_timeout
+
+        # Process state
         self.daemon = daemon
+        self._running_groups: Dict[GroupID, AllReduceRunner] = {}
+        self._pipe, self.pipe = mp.Pipe(duplex=True)
+        self._port = mp.Value(ctypes.c_uint32, 0)
+        self._allow_state_sharing = mp.Value(ctypes.c_bool, 0)
+        self.allow_state_sharing = (listen and not auxiliary) if allow_state_sharing is None else allow_state_sharing
+        self._averager_endpoint: Optional[Endpoint] = None
+        if not listen:
+            self._averager_endpoint = f'client::{uuid.uuid4()}'
 
+        # Shared tensors
         self._averaged_tensors = tuple(averaged_tensors)
         self.lock_averaged_tensors = mp.Lock()
         self.last_updated: DHTExpiration = -float('inf')
         for tensor in self._averaged_tensors:
-            assert tensor.grad_fn is None, "averaged_tensors must be either parameters or leaf tensors"
             tensor.share_memory_()
         self.total_size = sum(map(torch.Tensor.numel, self._averaged_tensors))
         self.schema_hash = compute_schema_hash(self._averaged_tensors)
-        self._throughput = throughput
 
-        self.matchmaking_kwargs = dict(
-            prefix=prefix, initial_group_bits=initial_group_bits, target_group_size=target_group_size,
-            min_group_size=min_group_size, averaging_expiration=averaging_expiration, request_timeout=request_timeout)
-        self.allreduce_kwargs = dict(compression_type=compression_type, chunk_size_bytes=chunk_size_bytes,
-                                     min_vector_size=min_vector_size)
-        self._averaging_alpha, self._allreduce_timeout = averaging_alpha, allreduce_timeout
-        self._running_groups: Dict[GroupID, AllReduceRunner] = {}  # one or more assembled groups that run all-reduce
-
-        self._pipe, self.pipe = mp.Pipe(duplex=True)  # a control pipe used to communicate with a background process
-        self._port = mp.Value(ctypes.c_uint32, 0)  # assigned when averager starts, accessible via self.port
-
-        self._allow_state_sharing = mp.Value(ctypes.c_bool, 0)
-        self.allow_state_sharing = (listen and not auxiliary) if allow_state_sharing is None else allow_state_sharing
-
-        self._averager_endpoint: Optional[Endpoint] = None
-        if not self.listen:
-            self._averager_endpoint = f'client::{uuid.uuid4()}'
-
-        self.ready = mp.Event()  # whether the averager process has started (and ready for incoming requests)
-        # note: we create a background thread weakref and with daemon=True to ensure garbage collection
+        # Start background fetcher and optionally run
+        self.ready = mp.Event()
         background_fetcher = threading.Thread(
-            daemon=True, target=_background_thread_fetch_current_state,
-            args=[self.serializer, self.pipe, weakref.WeakMethod(self.get_current_state)])
+            daemon=True,
+            target=_background_thread_fetch_current_state,
+            args=[self.serializer, self.pipe, weakref.WeakMethod(self.get_current_state)],
+        )
         background_fetcher.start()
         if start:
             self.run_in_background(await_ready=True)
+
+    # ----------------
+    # Bandwidth probe
+    # ----------------
+    def _perform_bandwidth_probe(self) -> float:
+        payload = b'\0' * self.probe_size
+        # use self.endpoint once server is running
+        target = self.endpoint or self.listen_on
+        channel = grpc.insecure_channel(target)
+        stub = averaging_pb2_grpc.BandwidthProbeStub(channel)
+        start = time.time()
+        resp = stub.rpc_ping(BandwidthProbeRequest(payload=payload))
+        rtt = time.time() - start
+        mbits = (self.probe_size * 8) / 1e6
+        mbps = (mbits * 2) / max(rtt, 1e-6)
+        channel.close()
+        return mbps
+
+    async def rpc_ping(self, request: BandwidthProbeRequest, context: grpc.ServicerContext) -> BandwidthProbeResponse:
+        return BandwidthProbeResponse(payload=request.payload)
+
+    async def _store_bandwidth(self, mbps: float):
+        key = f"{self.prefix}_bandwidth"
+        try:
+            await self.dht.store(key, value=mbps,
+                                  expiration_time=get_dht_time()+600,
+                                  return_future=True)
+        except Exception:
+            logger.warning(f"Failed to store bandwidth {mbps} Mbps to DHT key {key}")
+
+    # ----------------
+    # Server lifecycle
+    # ----------------
+    def run(self):
+        thread = threading.Thread(target=self._run_internal, daemon=True)
+        thread.start()
+        thread.join()
+
+    def _run_internal(self):
+        loop = switch_to_uvloop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            async def _run():
+                grpc.aio.init_grpc_aio()
+                if self.listen:
+                    server = grpc.aio.server(**self.kwargs, options=GRPC_KEEPALIVE_OPTIONS)
+                    averaging_pb2_grpc.add_DecentralizedAveragingServicer_to_server(self, server)
+                    averaging_pb2_grpc.add_BandwidthProbeServicer_to_server(self, server)
+                    found = server.add_insecure_port(self.listen_on)
+                    assert found != 0, f"Failed to bind {self.listen_on}"
+                    self._port.value = found
+                    await server.start()
+                    # after server is live, measure bandwidth
+                    mbps = await loop.run_in_executor(pool, self._perform_bandwidth_probe)
+                    asyncio.create_task(self._store_bandwidth(mbps))
+                    self._throughput = mbps
+                else:
+                    logger.debug("Averager running in client mode; skipping ping server.")
+
+                # matchmaking setup
+                self._matchmaking = Matchmaking(self.endpoint, self.schema_hash, self.dht, **self.matchmaking_kwargs, client_mode=not self.listen)
+                if self.listen:
+                    asyncio.create_task(self._declare_for_download_periodically())
+
+                self._pending_group_assembled = asyncio.Event()
+                self._pending_group_assembled.set()
+                self.ready.set()
+
+                while True:
+                    method, args, kwargs = await loop.run_in_executor(pool, self._pipe.recv)
+                    asyncio.create_task(getattr(self, method)(*args, **kwargs))
+            loop.run_until_complete(_run())
+
+    # ----------------
+    # Averaging step
+    # ----------------
+    async def _make_allreduce_runner(self, group_info: GroupInfo, min_vector_size: int, **kwargs) -> AllReduceRunner:
+        try:
+            # deserialize gathered blobs
+            weights, throughputs, mode_ids, user_blobs = zip(*map(self.serializer.loads, group_info.gathered))
+            user_gathered = dict(zip(group_info.endpoints, map(self.serializer.loads, user_blobs)))
+            # obtain PeerInfo list for LP
+            peer_infos: Sequence[PeerInfo] = group_info.peer_infos()
+            # solve LP for optimal part sizes
+            part_sizes = await asyncio.get_event_loop().run_in_executor(
+                None, load_balance_peers, self.total_size, peer_infos, min_vector_size
+            )
+            async with self.get_tensors_async() as averaged_tensors:
+                return AllReduceRunner(
+                    group_id=group_info.group_id,
+                    tensors=averaged_tensors,
+                    endpoint=self.endpoint,
+                    ordered_group_endpoints=group_info.endpoints,
+                    part_sizes=part_sizes,
+                    weights=weights,
+                    gathered=user_gathered,
+                    return_deltas=True,
+                    modes=tuple(map(AveragingMode, mode_ids)),
+                    **kwargs
+                )
+        except Exception as e:
+            raise MatchmakingException(f"Unable to create allreduce runner ({e})")
 
     @property
     def port(self) -> Optional[Port]:
@@ -165,13 +243,12 @@ class DecentralizedAverager(mp.Process, averaging_pb2_grpc.DecentralizedAveragin
 
     @property
     def allow_state_sharing(self) -> bool:
-        """ if set to True, other peers can download this peer's state """
         return bool(self._allow_state_sharing.value)
 
     @allow_state_sharing.setter
     def allow_state_sharing(self, value: bool):
         if value is True and not self.listen:
-            logger.warning("Cannot allow state sharing: averager in client mode (listen=False) cannot share its state.")
+            logger.warning("Cannot allow state sharing: averager in client mode cannot share state.")
         else:
             self._allow_state_sharing.value = value
 
@@ -583,8 +660,6 @@ def _background_thread_fetch_current_state(serializer: SerializerBase, pipe: mp.
 
 
 def compute_schema_hash(tensors: Sequence[torch.Tensor]) -> bytes:
-    """ A hash that describes follower's tensor shapes, dtypes, devices, but not the actual values """
-    schema_dicts = [{field_name: str(field_value)
-                     for field_name, field_value in asdict(TensorDescriptor.from_tensor(tensor)).items()}
-                    for tensor in tensors]
+    schema_dicts = [{field: str(value) for field, value in asdict(TensorDescriptor.from_tensor(t)).items()} for t in tensors]
     return DHTID.generate(source=schema_dicts).to_bytes()
+
