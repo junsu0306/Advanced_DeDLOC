@@ -1,53 +1,48 @@
 """ A background process that averages your tensors with peers """
 
 from __future__ import annotations
-
 import contextlib
 import random
 from math import isfinite
-from typing import Optional, AsyncIterator, Set, Tuple, Dict
+from typing import Any, Optional, AsyncIterator, Set, Tuple, Dict
 import concurrent.futures
 import asyncio
+import pickle
 
 import grpc
 import grpc._cython.cygrpc
 
-from hivemind.client.averaging.group_info import GroupInfo
+from hivemind.client.averaging.group_info import GroupInfo, PeerInfo
 from hivemind.client.averaging.key_manager import GroupKeyManager, GroupKey
 from hivemind.dht import DHT, DHTID, DHTExpiration, get_dht_time
 from hivemind.utils import get_logger, Endpoint, timed_storage, TimedStorage
 from hivemind.proto import averaging_pb2, averaging_pb2_grpc
 from hivemind.utils.grpc import ChannelCache
 
-
 logger = get_logger(__name__)
 
 
 class Matchmaking(averaging_pb2_grpc.DecentralizedAveragingServicer):
-    f"""
-    An internal class that is used to form groups of averages for running allreduce
-    See DecentralizedAverager docstring for the detailed description of all parameters
-
-    :note: on implementation: the current matchmaker protocol can encounter one type of (temporary) deadlock;
-      This deadlock occurs when averager A requests averager B at the same time as averager B requests averager A.
-      In that case, neither averager can process the other one's request because it is awaiting lock_request_join_group.
-      This deadlock only happens if averagers have outdated information on expirations (due to network delays).
-      While A->B->A deadlock is easy to fix, it gets much harder with more peers (e.g. A -> B -> C -> D -> A).
-      Hence, instead of accounting for such deadlocks, we simply break them with request_timeout.
     """
-
-    def __init__(self, endpoint: Endpoint, schema_hash: bytes, dht: DHT, *,
-                 prefix: str, target_group_size: int, min_group_size: int,
-                 request_timeout: float, client_mode: bool, initial_group_bits: Optional[str] = None,
-                 averaging_expiration: float = 15):
+    A background process for decentralized averaging with peer metadata collection.
+    """
+    def __init__(
+        self, endpoint: Endpoint, schema_hash: bytes, dht: DHT, *,
+        prefix: str, target_group_size: int, min_group_size: int,
+        request_timeout: float, client_mode: bool, initial_group_bits: Optional[str] = None,
+        averaging_expiration: float = 15
+    ):
         assert '.' not in prefix, "group prefix must be a string without ."
         if request_timeout is None or request_timeout >= averaging_expiration:
-            logger.warning("It is recommended to use request_timeout smaller than averaging_expiration. Otherwise,"
-                           "matchmaking can cause deadlocks in some rare cases. Please see Matchmaking docstring.")
-
+            logger.warning(
+                "Use request_timeout < averaging_expiration to avoid rare deadlocks."
+            )
         super().__init__()
-        self.endpoint, self.schema_hash = endpoint, schema_hash
-        self.group_key_manager = GroupKeyManager(dht, endpoint, prefix, initial_group_bits, target_group_size)
+        self.prefix = prefix
+        self.endpoint, self.schema_hash, self.dht = endpoint, schema_hash, dht
+        self.group_key_manager = GroupKeyManager(
+            dht, endpoint, prefix, initial_group_bits, target_group_size
+        )
         self.target_group_size, self.min_group_size = target_group_size, min_group_size
         self.averaging_expiration, self.request_timeout = averaging_expiration, request_timeout
         self.client_mode = client_mode
@@ -58,64 +53,67 @@ class Matchmaking(averaging_pb2_grpc.DecentralizedAveragingServicer):
         self.was_accepted_to_group = asyncio.Event()
         self.assembled_group = asyncio.Future()
 
-        self.current_leader: Optional[Endpoint] = None  # iff i am a follower, this is a link to my current leader
-        self.current_followers: Dict[Endpoint, averaging_pb2.JoinRequest] = {}  # my current followers excluding myself
+        self.current_leader: Optional[Endpoint] = None
+        self.current_followers: Dict[Endpoint, averaging_pb2.JoinRequest] = {}
         self.potential_leaders = PotentialLeaders(endpoint, averaging_expiration, target_group_size)
         self.data_for_gather: Optional[bytes] = None
 
+    def _serialize_local_peer(self) -> Dict[str, Any]:
+        """Collect and return local peer metrics."""
+        # 1) 내 노드의 samples_per_second만 정확히 가져오기
+        entry = self.dht.get(f"{self.prefix}_metrics", latest=True)
+        compute_rate = 0.0
+        if entry is not None and isinstance(entry.value, dict):
+            local_stats = entry.value.get(self.dht.node_id)
+            if isinstance(local_stats, dict):
+                compute_rate = float(local_stats.get("samples_per_second", 0.0))
+
+        # 2) 내 노드의 upload/download 대역폭 가져오기
+        bw = 0.0
+        bw_entry = self.dht.get(f"{self.prefix}_bandwidth", latest=True)
+        if bw_entry is not None:
+            try:
+                bw = float(bw_entry.value)
+            except Exception:
+                bw = 0.0
+
+        # 3) latency_map은 이후 GroupInfo에서 채워주므로 빈 dict로 초기화
+        latency_map: Dict[Endpoint, float] = {}
+
+        return {
+            "compute_rate": compute_rate,
+            "upload_bw": bw,
+            "download_bw": bw,
+            "latency_map": latency_map,
+        }
+
     @property
-    def is_looking_for_group(self):
+    def is_looking_for_group(self) -> bool:
         return self.lock_looking_for_group.locked()
 
-    def __repr__(self):
-        lfg_status = "looking for group," if self.is_looking_for_group else "not looking for group,"
+    async def look_for_group(
+        self, *, data_for_gather: bytes, timeout: Optional[float] = None
+    ) -> Optional[GroupInfo]:
         if self.is_looking_for_group:
-            if self.current_leader:
-                lfg_status += f" following {self.current_leader},"
-            if len(self.current_followers):
-                lfg_status += f" leading {len(self.current_followers)} followers,"
-        schema_hash_repr = f"{self.schema_hash[0]}...{self.schema_hash[-8:]}"
-        return f"{self.__class__.__name__}(endpoint={self.endpoint}, schema={schema_hash_repr}, {lfg_status}" \
-               f" current key = {self.group_key_manager.current_key}, client_mode={self.client_mode})"
-
-    async def look_for_group(self, *, data_for_gather: bytes, timeout: Optional[float] = None) -> Optional[GroupInfo]:
-        """
-        :param data_for_gather: optionally send this data to all peers in the next group and gather it from groupmates
-        :param timeout: maximum time that may be spent looking for group (does not include allreduce itself)
-        :returns: an assembled group if successful, None if failed; does NOT perform the actual averaging
-        Iterate over the averagers from a given group_identifier that have higher leadership priority than yourself.
-        """
-        if self.is_looking_for_group:
-            logger.info("Another look_for_group is already in progress. The current run will be scheduled after"
-                        " the existing group is either assembled or disbanded.")
+            logger.info("Another look_for_group already in progress.")
         async with self.lock_looking_for_group:
-            self.data_for_gather = data_for_gather
-            request_leaders_task = asyncio.create_task(self._request_join_potential_leaders(timeout))
+            user_blob = data_for_gather or b''
+            peer_metrics = self._serialize_local_peer()
+            payload = {'user_data': user_blob, 'peer_metrics': peer_metrics}
+            self.data_for_gather = pickle.dumps(payload)
+
+            task = asyncio.create_task(self._request_join_potential_leaders(timeout))
             try:
                 return await asyncio.wait_for(self.assembled_group, timeout=timeout)
             except asyncio.TimeoutError:
                 return None
-
-            except BaseException as e:
-                if len(self.current_followers) > 0:
-                    async with self.lock_request_join_group:
-                        await self.leader_disband_group()
-                if not self.assembled_group.done():
-                    self.assembled_group.set_exception(e)
-                raise
-
             finally:
-                if not request_leaders_task.done():
-                    request_leaders_task.cancel()
-                if not self.assembled_group.done():
-                    self.assembled_group.cancel()
-                while len(self.current_followers) > 0:
+                if not task.done(): task.cancel()
+                if not self.assembled_group.done(): self.assembled_group.cancel()
+                while self.current_followers:
                     await self.follower_was_discarded.wait()
                     self.follower_was_discarded.clear()
-                # note: the code above ensures that we send all followers away before creating new future
                 self.assembled_group = asyncio.Future()
-                self.was_accepted_to_group.clear()
-                self.data_for_gather = None
 
     async def _request_join_potential_leaders(self, timeout: Optional[float]) -> GroupInfo:
         """ Request leaders from queue until we find the first runner. This coroutine is meant to run in background. """
@@ -333,15 +331,19 @@ class Matchmaking(averaging_pb2_grpc.DecentralizedAveragingServicer):
 
 
 class PotentialLeaders:
-    """ An utility class that searches for averagers that could become our leaders """
-
-    def __init__(self, endpoint: Endpoint, averaging_expiration: DHTExpiration, target_group_size: Optional[int]):
+    def __init__(
+        self, endpoint: Endpoint, averaging_expiration: DHTExpiration, target_group_size: Optional[int]
+    ):
         self.endpoint, self.averaging_expiration = endpoint, averaging_expiration
         self.target_group_size = target_group_size
-        self.running, self.update_triggered, self.update_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
-        self.declared_expiration, self.lock_search, self.lock_declare = asyncio.Event(), asyncio.Lock(), asyncio.Lock()
+        self.running = asyncio.Event()
+        self.update_triggered = asyncio.Event()
+        self.update_finished = asyncio.Event()
+        self.lock_search = asyncio.Lock()
+        self.lock_declare = asyncio.Lock()
         self.leader_queue = TimedStorage[Endpoint, DHTExpiration]()
         self.past_attempts: Set[Tuple[Endpoint, DHTExpiration]] = set()
+        self.declared_expiration = asyncio.Event()
         self.declared_expiration_time = float('inf')
         self.declared_group_key: Optional[GroupKey] = None
         self.max_assured_time = float('-inf')
