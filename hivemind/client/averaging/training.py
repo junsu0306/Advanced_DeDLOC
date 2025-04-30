@@ -41,7 +41,7 @@ class TrainingAverager(DecentralizedAverager):
         average_opt_statistics: Sequence[str] = (),
         extra_tensors: Sequence[torch.Tensor] = (),
         initialize_optimizer: bool = True,
-        use_pairwise: bool = False,
+        use_pairwise: bool = True,
         **kwargs: Any,
     ):
         self.opt = opt
@@ -54,7 +54,6 @@ class TrainingAverager(DecentralizedAverager):
 
         # Initialize optimizer state if needed
         if initialize_optimizer:
-            from hivemind.optim.base import initialize_optimizer_state
             self._initialize_optimizer_state(opt)
 
         # Prepare tensors to average
