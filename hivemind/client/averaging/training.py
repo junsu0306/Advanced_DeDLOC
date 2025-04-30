@@ -8,7 +8,6 @@ import torch
 
 from hivemind.client.averaging import DecentralizedAverager
 from hivemind.utils import nested_flatten, nested_pack, get_logger, run_in_background
-from hivemind.optim.utils import initialize_optimizer_state
 
 logger = get_logger(__name__)
 
@@ -55,6 +54,7 @@ class TrainingAverager(DecentralizedAverager):
 
         # Initialize optimizer state if needed
         if initialize_optimizer:
+            from hivemind.optim.utils import initialize_optimizer_state
             self._initialize_optimizer_state(opt)
 
         # Prepare tensors to average
