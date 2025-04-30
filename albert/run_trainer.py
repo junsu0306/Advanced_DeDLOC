@@ -32,6 +32,15 @@ from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
 logger = logging.getLogger(__name__)
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
 
+class NoOpScheduler(LRSchedulerBase):
+    def __init__(self, optimizer):
+        # LRSchedulerBase 의 인터페이스만 맞춰 주면 됩니다
+        self.optimizer = optimizer
+
+    def step(self, *args, **kwargs):
+        # 아무 동작도 하지 않습니다
+        return
+
 class CollaborativeCallback(transformers.TrainerCallback):
     """
     Trainer에 끼워서 train_step마다 hivemind 옵티마이저로 동기화합니다.
