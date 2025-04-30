@@ -157,6 +157,7 @@ class CollaborativeOptimizer(DecentralizedOptimizerBase):
 
         return TrainingAverager(
             opt=self.opt,
+            dht=self.dht,
             average_parameters=True,
             average_gradients=True,
             use_pairwise=self.use_pairwise,
