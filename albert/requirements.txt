@@ -5,4 +5,4 @@ wandb>=0.10.26
 sentencepiece
 whatsmyip
 nltk>=3.6.2
-hivemind>=0.9.9
+git+https://github.com/WKJ-00/hivemind.git@main#egg=hivemind
