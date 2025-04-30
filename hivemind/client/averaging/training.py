@@ -8,6 +8,7 @@ import torch
 
 from hivemind.client.averaging import DecentralizedAverager
 from hivemind.utils import nested_flatten, nested_pack, get_logger, run_in_background
+from hivemind.optim.utils import initialize_optimizer_state
 
 logger = get_logger(__name__)
 
