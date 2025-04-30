@@ -206,7 +206,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.samples = self.collaborative_optimizer.local_samples_accumulated
          # ✅ 여기!
         #torch.cuda.empty_cache()
-
+        
         return control
 
     @torch.no_grad()
