@@ -40,7 +40,8 @@ class NoOpScheduler(LRSchedulerBase):
     Actual scheduling is handled inside CollaborativeOptimizer.
     """
     def __init__(self, optimizer):
-        self.optimizer = optimizer
+        # Initialize base scheduler to set up internal _last_lr
+        super().__init__(optimizer)
 
     def step(self, *args, **kwargs):
         # no operation
@@ -51,9 +52,8 @@ class NoOpScheduler(LRSchedulerBase):
 
     def load_state_dict(self, state_dict):
         pass
-# ─────────────────────────────────────────────────────────────────────────────
 
-class CollaborativeCallback(transformers.TrainerCallback):
+class CollaborativeCallback(transformers.TrainerCallback):(transformers.TrainerCallback):
     """
     Trainer에 끼워서 train_step마다 hivemind 옵티마이저로 동기화합니다.
     """
