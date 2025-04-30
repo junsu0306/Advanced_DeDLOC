@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
 
 import random
 import torch
@@ -18,19 +18,20 @@ from transformers import (
     HfArgumentParser,
     TrainingArguments,
     DataCollatorForLanguageModeling,
+    BertConfig,
+    BertTokenizerFast,
+    BertForMaskedLM,
 )
 from transformers.optimization import get_linear_schedule_with_warmup
 from transformers.trainer_utils import is_main_process
 from transformers.trainer import Trainer
 from torch_optimizer import Lamb
 
-from transformers import BertConfig, BertForMaskedLM, BertTokenizerFast
 from arguments import CollaborationArguments, DatasetArguments, BertTrainingArguments
 import metrics_utils
 from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
 
 logger = logging.getLogger(__name__)
-# Grab internal Trainer LR scheduler base class
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
 
 # ─── Dummy LR scheduler to satisfy transformers.Trainer API ─────────────────
@@ -40,22 +41,20 @@ class NoOpScheduler(LRSchedulerBase):
     Actual scheduling is handled inside CollaborativeOptimizer.
     """
     def __init__(self, optimizer):
-        # Initialize base scheduler internals to set up _last_lr
+        # Initialize internal _last_lr so Trainer.get_last_lr() won't fail
         super().__init__(optimizer)
-        # Set initial last_lr to current optimizer lrs
-        self._last_lr = [group['lr'] for group in optimizer.param_groups]
+        self._last_lr = [group["lr"] for group in optimizer.param_groups]
 
     def step(self, *args, **kwargs):
-        # no operation, keep last_lr
+        # no-op
         return
 
     def state_dict(self):
-        # No state to save
         return {}
 
     def load_state_dict(self, state_dict):
-        # Nothing to load
         pass
+# ─────────────────────────────────────────────────────────────────────────────
 
 class CollaborativeCallback(transformers.TrainerCallback):
     """
@@ -81,14 +80,12 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.enable_eval = enable_eval
 
     def on_step_end(self, args, state, control, **kwargs):
-        # 매 train step 후 hivemind 옵티마이저 step
         self.optimizer.step()
         return control
 
     def on_train_begin(self, args, state, control, **kwargs):
-        # Trainer 인스턴스가 준비되면 참조를 저장
-        if self.trainer is None and 'trainer' in kwargs:
-            self.trainer = kwargs['trainer']
+        if self.trainer is None and "trainer" in kwargs:
+            self.trainer = kwargs["trainer"]
 
 
 def setup_logging(training_args):
