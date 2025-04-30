@@ -3,7 +3,7 @@ import numpy as np
 import scipy.optimize
 
 from hivemind.utils.logging import get_logger
-from group_info import PeerInfo
+from hivemind.client.averaging.group_info import PeerInfo
 
 logger = get_logger(__name__)
 
