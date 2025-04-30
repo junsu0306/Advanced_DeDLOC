@@ -57,7 +57,7 @@ class NoOpScheduler(LRSchedulerBase):
         # Nothing to load
         pass
 
-class CollaborativeCallback(transformers.TrainerCallback):(transformers.TrainerCallback):
+class CollaborativeCallback(transformers.TrainerCallback):
     """
     Trainer에 끼워서 train_step마다 hivemind 옵티마이저로 동기화합니다.
     """
