@@ -1,4 +1,3 @@
-""" An extension of averager that supports common optimization use cases. """
 from itertools import chain
 from threading import Lock
 from typing import Sequence, Dict, Iterator, Optional, Any, Tuple
@@ -17,19 +16,9 @@ class TrainingAverager(DecentralizedAverager):
     A high-level interface to DecentralizedAverager that averages trainable params or gradients for an optimizer.
 
     This averager implements a number of typical use cases that arise in collaborative optimization
-    - averaging parameters or gradients or both (in future, this will support averaging learning rates as well)
+    - averaging parameters or gradients or both
     - this peer's weight (e.g. based on its batch size) can be specified via averager.step(weight=...)
     - when out of sync, the averager will load the entire optimizer state from an up-to-date peer
-
-    :param opt: a pytorch optimizer to be averaged between peers (complete with model parameters)
-    :param average_parameters: whether or not to average model parameters in self.step(...)
-    :param average_gradients: whether or not to average model gradients in self.step(...)
-    :param average_opt_statistics: if specified, average optimizer statistics with corresponding names in statedict
-    :param initialize_optimizer: if True, this will run a speculative optimizer step with
-      zero gradients to initialize all tensors. If False, please initialize the optimizer state manually.
-    :param extra_tensors: if specified, these extra tensors will also be averaged and shared in load_state_from_peers.
-    :note: you can use extra_tensors for averaging tensors that are updated outside of opt.step (e.g. batchnorm stats)
-    :param kwargs: any additional parameters will be forwarded to DecentralizedAverager
     """
 
     def __init__(
@@ -41,7 +30,7 @@ class TrainingAverager(DecentralizedAverager):
         average_opt_statistics: Sequence[str] = (),
         extra_tensors: Sequence[torch.Tensor] = (),
         initialize_optimizer: bool = True,
-        use_pairwise: bool = True,
+        use_pairwise: bool = False,
         **kwargs: Any,
     ):
         self.opt = opt
@@ -92,7 +81,7 @@ class TrainingAverager(DecentralizedAverager):
                 for av, lt in zip(averaged_tensors, local_tensors):
                     av[...] = lt.cpu().float()
 
-            # Run decentralized averaging (paired or full, depending on use_pairwise)
+            # Run decentralized averaging
             gathered = super().step(**kwargs)
 
             # Merge back averaged results into local model/optimizer
@@ -109,12 +98,6 @@ class TrainingAverager(DecentralizedAverager):
             return gathered
 
     def local_tensors(self, replace_none: bool = True) -> Iterator[torch.Tensor]:
-        """
-        Iterate local trainer's tensors that should be averaged with peers
-
-        :param replace_none: if True and average_gradients is True, None grads will be replaced with a zero tensors
-          Otherwise, such gradients will be skipped. (this may cause inconsistencies with averaged_tensors)
-        """
         if self.average_parameters:
             for pg in self.opt.param_groups:
                 yield from pg['params']
@@ -132,22 +115,14 @@ class TrainingAverager(DecentralizedAverager):
         yield from iter(self.extra_tensors)
 
     def get_current_state(self) -> Tuple[Dict, list]:
-        """
-        Get current model/optimizer state and when requested by a newbie peer. executed in the host process.
-        :returns: a tuple of (serializable_small_metadata, sequence of torch tensors)
-        """
         with torch.no_grad():
             params = tuple(p.detach().cpu() for pg in self.opt.param_groups for p in pg['params'])
             extras = tuple(t.detach().cpu() for t in self.extra_tensors)
             meta, tensors = self._dump_optimizer_state(self.opt)
         metadata = dict(step=self.local_step, group_bits=self.get_group_bits(), optimizer_metadata=meta)
         return metadata, list(chain(params, extras, tensors))
-    
+
     def load_state_from_peers(self, **kwargs: Any) -> None:
-        """
-        Attempt to download the latest optimizer state from peers and update trainer parameters/statistics.
-        :returns: whether or the averager succeeded in loading parameters
-        """
         parameters = [p for pg in self.opt.param_groups for p in pg['params']]
         parameters.extend(self.extra_tensors)
         num_params = len(parameters)
@@ -166,47 +141,43 @@ class TrainingAverager(DecentralizedAverager):
 
         self.local_step = max(self.local_step, metadata['step'])
 
-@staticmethod
-def initialize_optimizer_state(opt: torch.optim.Optimizer) -> None:
-        # Run a dummy backward+step to initialize optimizer buffers
+    # ──────────────── 아래에 세 개의 static 메서드를 추가 ────────────────
+
+    @staticmethod
+    def _initialize_optimizer_state(opt: torch.optim.Optimizer) -> None:
+        """Dummy backward + step to initialize optimizer internal buffers."""
         for pg in opt.param_groups:
             for p in pg['params']:
                 if p.grad is None:
                     (p * 0).sum().backward()
         opt.step()
+        opt.zero_grad(set_to_none=True)
 
-@staticmethod
-def dump_optimizer_state(opt: torch.optim.Optimizer) -> Tuple[list, list]:
-    """ Convert optimizer state into a format of DecentralizedAverager's get_current_state/load_state_from_peers """
-    with torch.no_grad():
-        md, ts = [], []
-        for elem in nested_flatten(opt.state_dict()):
-            if isinstance(elem, torch.Tensor):
-                md.append({'type': 'tensor', 'index': len(ts)})
-                ts.append(elem.cpu())
-            else:
-                md.append({'type': 'value', 'value': elem})
-        return md, ts
-
-@staticmethod
-def load_optimizer_state(
-        optimizer: torch.optim.Optimizer,
-        flat_metadata: Dict,
-        flat_tensors: Sequence[torch.Tensor]
-    ) -> Any:
-        """
-        Copy-pasted original implementation of load_optimizer_state for full fidelity:
-        """
-        flat_optimizer_state = []
-        for elem in flat_metadata:
-            if elem.get('type') == 'tensor' and isinstance(elem.get('index'), int):
-                flat_optimizer_state.append(flat_tensors[elem['index']])
-            elif elem.get('type') == 'value' and 'value' in elem:
-                flat_optimizer_state.append(elem['value'])
+    @staticmethod
+    def _dump_optimizer_state(opt: torch.optim.Optimizer) -> Tuple[list, list]:
+        """Flatten optimizer.state_dict() into (meta, tensors) for averaging."""
+        flat_meta, flat_tensors = [], []
         with torch.no_grad():
-            try:
-                return optimizer.load_state_dict(
-                    nested_pack(flat_optimizer_state, structure=optimizer.state_dict())
-                )
-            except StopIteration:
-                return optimizer
+            for item in nested_flatten(opt.state_dict()):
+                if isinstance(item, torch.Tensor):
+                    flat_meta.append({"type": "tensor", "index": len(flat_tensors)})
+                    flat_tensors.append(item.cpu())
+                else:
+                    flat_meta.append({"type": "value", "value": item})
+        return flat_meta, flat_tensors
+
+    @staticmethod
+    def _load_optimizer_state(
+        optimizer: torch.optim.Optimizer,
+        flat_meta: list,
+        flat_tensors: Sequence[torch.Tensor]
+    ) -> None:
+        """Restore optimizer.state_dict() from flattened (meta, tensors)."""
+        rebuilt = []
+        for rec in flat_meta:
+            if rec.get("type") == "tensor":
+                rebuilt.append(flat_tensors[rec["index"]])
+            else:
+                rebuilt.append(rec["value"])
+        with torch.no_grad():
+            optimizer.load_state_dict(nested_pack(rebuilt, optimizer.state_dict()))
