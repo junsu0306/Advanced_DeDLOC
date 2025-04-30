@@ -30,9 +30,29 @@ import metrics_utils
 from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
 
 logger = logging.getLogger(__name__)
+# Grab internal Trainer LR scheduler base class
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
 
-# ─── 콜백 클래스 정의 ─────────────────────────────────────────────────────────
+# ─── Dummy LR scheduler to satisfy transformers.Trainer API ─────────────────
+class NoOpScheduler(LRSchedulerBase):
+    """
+    Dummy LR scheduler for transformers.Trainer.
+    Actual scheduling is handled inside CollaborativeOptimizer.
+    """
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+
+    def step(self, *args, **kwargs):
+        # no operation
+        return
+
+    def state_dict(self):
+        return {}
+
+    def load_state_dict(self, state_dict):
+        pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 class CollaborativeCallback(transformers.TrainerCallback):
     """
     Trainer에 끼워서 train_step마다 hivemind 옵티마이저로 동기화합니다.
@@ -59,25 +79,12 @@ class CollaborativeCallback(transformers.TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         # 매 train step 후 hivemind 옵티마이저 step
         self.optimizer.step()
+        return control
 
     def on_train_begin(self, args, state, control, **kwargs):
         # Trainer 인스턴스가 준비되면 참조를 저장
         if self.trainer is None and 'trainer' in kwargs:
             self.trainer = kwargs['trainer']
-
-
-# ─── NoOpScheduler 정의 ────────────────────────────────────────────────────────
-class NoOpScheduler(LRSchedulerBase):
-    """
-    Trainer와 함께 넘기지만 실제로 아무 동작도 하지 않는 dummy LR 스케줄러입니다.
-    """
-    def __init__(self, optimizer):
-        self.optimizer = optimizer
-
-    def step(self, *args, **kwargs):
-        # 아무 것도 하지 않음
-        return
-
 
 
 def setup_logging(training_args):
@@ -135,7 +142,6 @@ def get_optimizer_and_scheduler(training_args, model):
     return opt, scheduler
 
 
-
 def main():
     parser = HfArgumentParser((BertTrainingArguments, DatasetArguments, CollaborationArguments))
     training_args, dataset_args, collaboration_args = parser.parse_args_into_dataclasses()
@@ -144,18 +150,18 @@ def main():
     training_args.fp16 = True
     training_args.fp16_full_eval = True
 
-    # 1 collaboration_args_dict 생성 및 불필요한 키 제거 (한 번만!)
+    # collaboration_args_dict 생성 및 불필요한 키 제거 (한 번만!)
     collaboration_args_dict = asdict(collaboration_args)
     for key in ("wandb_project", "use_pairwise"):
         collaboration_args_dict.pop(key, None)
 
-    # 2 local_public_key 생성 및 wandb 초기화
+    # local_public_key 생성 및 wandb 초기화
     validators, local_public_key = metrics_utils.make_validators(collaboration_args_dict["experiment_prefix"])
     project = collaboration_args.wandb_project or "default-peer-project"
     run_name = f"peer-{local_public_key[:6].hex()}"
     wandb.init(project=project, name=run_name, group="bert-exp-001", reinit=True)
 
-    # 3 evaluation 설정
+    # evaluation 설정
     training_args.evaluation_strategy = "steps" if training_args.enable_eval else "no"
     training_args.eval_steps = 500
     training_args.do_eval = training_args.enable_eval
@@ -168,19 +174,19 @@ def main():
     setup_logging(training_args)
     set_seed(training_args.seed)
 
-    # 4 모델·토크나이저 불러오기
+    # 모델·토크나이저 불러오기
     config = BertConfig.from_pretrained(dataset_args.config_path, cache_dir=dataset_args.cache_dir)
     tokenizer = BertTokenizerFast.from_pretrained(dataset_args.tokenizer_path, cache_dir=dataset_args.cache_dir)
     model = get_model(training_args, config, tokenizer).to(training_args.device)
 
-    # 5 데이터셋·콜레이터 준비
+    # 데이터셋·콜레이터 준비
     datasets = load_from_disk(dataset_args.dataset_path)
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer)
 
-    # 6 옵티마이저·스케줄러
+    # 옵티마이저·스케줄러
     opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
-    # 7 DHT 초기화
+    # DHT 초기화
     dht = hivemind.DHT(
         start=True,
         initial_peers=collaboration_args_dict.pop("initial_peers"),
@@ -190,12 +196,12 @@ def main():
         record_validators=validators,
     )
 
-    # 8 배치 사이즈 계산
+    # 배치 사이즈 계산
     total_batch_per_step = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
     statistics_expiration = collaboration_args_dict.pop("statistics_expiration")
     adjusted_target = collaboration_args_dict.pop("target_batch_size") - collaboration_args_dict.pop("batch_size_lead")
 
-    # 9 CollaborativeOptimizer / PartialStale 분기
+    # CollaborativeOptimizer 분기
     if training_args.partial_stale:
         logger.info("Using PartialStaleCollaborativeOptimizer (1-step delay).")
         collaborative_optimizer = PartialStaleCollaborativeOptimizer(
@@ -229,40 +235,39 @@ def main():
             start=True,
             **collaboration_args_dict,
         )
-    # =============================================
 
+    # compute_metrics 정의
     def compute_metrics_mlm(eval_pred):
         import numpy as np
         logits, labels = eval_pred
-
-    # ✅ 명확히 GPU에서 CPU로 변환
         if hasattr(logits, "cpu"):
             logits = logits.cpu().numpy()
         if hasattr(labels, "cpu"):
             labels = labels.cpu().numpy()
-
-        predictions = np.argmax(logits, axis=-1)
+        preds = np.argmax(logits, axis=-1)
         mask = labels != -100
-        correct = (predictions[mask] == labels[mask]).sum()
+        correct = (preds[mask] == labels[mask]).sum()
         total = mask.sum()
-        accuracy = correct / total if total > 0 else 0.0
-        return {"accuracy": float(accuracy)}
+        return {"accuracy": float(correct / total) if total > 0 else 0.0}
 
-
+    # TrainerWithIndependentShuffling 정의
     class TrainerWithIndependentShuffling(Trainer):
         def get_train_dataloader(self) -> DataLoader:
             torch.manual_seed(hash(local_public_key))
             return super().get_train_dataloader()
-    
-    # 먼저 callback 인스턴스를 만든다
+
+    # Callback 인스턴스화
     callback = CollaborativeCallback(
-    dht, collaborative_optimizer, model, local_public_key, statistics_expiration,
-    trainer=None,
-    enable_eval=training_args.enable_eval  # ✅ 여기에 플래그 전달
+        dht=dht,
+        optimizer=collaborative_optimizer,
+        model=model,
+        local_public_key=local_public_key,
+        statistics_expiration=statistics_expiration,
+        trainer=None,
+        enable_eval=training_args.enable_eval,
     )
 
-    
-# Trainer 인스턴스 생성
+    # Trainer 생성
     trainer = TrainerWithIndependentShuffling(
         model=model,
         args=training_args,
@@ -271,28 +276,20 @@ def main():
         train_dataset=datasets["train"],
         eval_dataset=datasets["validation"],
         optimizers=(collaborative_optimizer, NoOpScheduler(collaborative_optimizer)),
-        callbacks=[callback],  # ✅ 바로 위에서 만든 callback 인스턴스 사용
+        callbacks=[callback],
         compute_metrics=compute_metrics_mlm,
-)
-
+    )
     trainer.remove_callback(transformers.trainer_callback.PrinterCallback)
     trainer.remove_callback(transformers.trainer_callback.ProgressCallback)
 
-# ✅ 이제 trainer 객체를 callback에 넣어줌
+    # Trainer 참조 주입
     callback.trainer = trainer
 
-    # Training
+    # 학습 시작
     if training_args.do_train:
-        latest_checkpoint_dir = max(Path(training_args.output_dir).glob("checkpoint*"), default=None, key=os.path.getctime)
-        trainer.train(model_path=latest_checkpoint_dir)
-        # ✅ 수동으로 evaluate() 호출 (정상 동작 여부 확인)
-    #*print("🔍 Running manual evaluation...")
-    #result = trainer.evaluate()
-    #print("✅ Eval result:", result)
-    #print("eval_dataset size:", len(trainer.eval_dataset))
-
-
-    
+        latest_ckpt = max(Path(training_args.output_dir).glob("checkpoint*"),
+                          default=None, key=os.path.getctime)
+        trainer.train(model_path=latest_ckpt)
 
 
 if __name__ == "__main__":
