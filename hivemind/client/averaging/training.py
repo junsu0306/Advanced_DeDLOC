@@ -54,7 +54,7 @@ class TrainingAverager(DecentralizedAverager):
 
         # Initialize optimizer state if needed
         if initialize_optimizer:
-            from hivemind.utils import initialize_optimizer_state
+            from hivemind.optim.base import initialize_optimizer_state
             self._initialize_optimizer_state(opt)
 
         # Prepare tensors to average
