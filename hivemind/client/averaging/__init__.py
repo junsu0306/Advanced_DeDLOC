@@ -30,7 +30,7 @@ from hivemind.utils.compression import serialize_torch_tensor, deserialize_torch
 from hivemind.utils.asyncio import anext, achain, aiter, switch_to_uvloop
 from hivemind.utils.timed_storage import ValueWithExpiration, DHTExpiration
 from hivemind.utils.serializer import MSGPackSerializer, SerializerBase
-from hivemind.utils import Endpoint, Port, MPFuture, get_logger, TensorDescriptor, compute_schema_hash
+from hivemind.utils import Endpoint, Port, MPFuture, get_logger, TensorDescriptor
 
 # flavour types
 data_for_gather = Any
