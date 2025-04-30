@@ -30,7 +30,7 @@ from hivemind.utils.compression import serialize_torch_tensor, deserialize_torch
 from hivemind.utils.asyncio import anext, achain, aiter, switch_to_uvloop
 from hivemind.utils.timed_storage import ValueWithExpiration, DHTExpiration
 from hivemind.utils.serializer import MSGPackSerializer, SerializerBase
-from hivemind.utils import Endpoint, Port, MPFuture, get_logger, TensorDescriptor
+from hivemind.utils import Endpoint, Port, MPFuture, get_logger, TensorDescriptor, compute_schema_hash
 
 # flavour types
 data_for_gather = Any
@@ -84,7 +84,6 @@ class DecentralizedAverager(
         self.listen, self.listen_on, self.kwargs = listen, listen_on, kwargs
         self.probe_size = probe_size
         self.prefix = prefix
-        # default throughput until probed
         self._throughput = throughput or 0.0
 
         # Averaging parameters
@@ -141,7 +140,6 @@ class DecentralizedAverager(
     # ----------------
     def _perform_bandwidth_probe(self) -> float:
         payload = b'\0' * self.probe_size
-        # use self.endpoint once server is running
         target = self.endpoint or self.listen_on
         channel = grpc.insecure_channel(target)
         stub = averaging_pb2_grpc.BandwidthProbeStub(channel)
@@ -186,15 +184,15 @@ class DecentralizedAverager(
                     assert found != 0, f"Failed to bind {self.listen_on}"
                     self._port.value = found
                     await server.start()
-                    # after server is live, measure bandwidth
                     mbps = await loop.run_in_executor(pool, self._perform_bandwidth_probe)
                     asyncio.create_task(self._store_bandwidth(mbps))
                     self._throughput = mbps
                 else:
                     logger.debug("Averager running in client mode; skipping ping server.")
 
-                # matchmaking setup
-                self._matchmaking = Matchmaking(self.endpoint, self.schema_hash, self.dht, **self.matchmaking_kwargs, client_mode=not self.listen)
+                self._matchmaking = Matchmaking(self.endpoint, self.schema_hash, self.dht,
+                                                **self.matchmaking_kwargs,
+                                                client_mode=not self.listen)
                 if self.listen:
                     asyncio.create_task(self._declare_for_download_periodically())
 
@@ -205,7 +203,23 @@ class DecentralizedAverager(
                 while True:
                     method, args, kwargs = await loop.run_in_executor(pool, self._pipe.recv)
                     asyncio.create_task(getattr(self, method)(*args, **kwargs))
+
             loop.run_until_complete(_run())
+
+    def run_in_background(self, await_ready=True, timeout=None):
+        self.start()
+        if await_ready and not self.ready.wait(timeout=timeout):
+            raise TimeoutError(f"Server didn't notify .ready in {timeout} seconds")
+
+    def shutdown(self) -> None:
+        if self._parent_pid != os.getpid() or self.is_alive():
+            self._pipe.send(('_SHUTDOWN', None))
+            self.terminate()
+        else:
+            logger.warning("DHT shutdown has no effect: the process is not alive")
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.endpoint})"
 
     # ----------------
     # Averaging step
@@ -213,14 +227,21 @@ class DecentralizedAverager(
     async def _make_allreduce_runner(self, group_info: GroupInfo, min_vector_size: int, **kwargs) -> AllReduceRunner:
         try:
             # deserialize gathered blobs
-            weights, throughputs, mode_ids, user_blobs = zip(*map(self.serializer.loads, group_info.gathered))
-            user_gathered = dict(zip(group_info.endpoints, map(self.serializer.loads, user_blobs)))
+            weights, throughputs, mode_ids, user_blobs = zip(
+                *map(self.serializer.loads, group_info.gathered)
+            )
+            user_gathered = dict(
+                zip(group_info.endpoints, map(self.serializer.loads, user_blobs))
+            )
+
             # obtain PeerInfo list for LP
             peer_infos: Sequence[PeerInfo] = group_info.peer_infos()
+
             # solve LP for optimal part sizes
             part_sizes = await asyncio.get_event_loop().run_in_executor(
                 None, load_balance_peers, self.total_size, peer_infos, min_vector_size
             )
+
             async with self.get_tensors_async() as averaged_tensors:
                 return AllReduceRunner(
                     group_id=group_info.group_id,
