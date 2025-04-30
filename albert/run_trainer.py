@@ -32,15 +32,7 @@ from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
 logger = logging.getLogger(__name__)
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
 
-class NoOpScheduler(LRSchedulerBase):
-    def __init__(self, optimizer):
-        # LRSchedulerBase 의 인터페이스만 맞춰 주면 됩니다
-        self.optimizer = optimizer
-
-    def step(self, *args, **kwargs):
-        # 아무 동작도 하지 않습니다
-        return
-
+# ─── 콜백 클래스 정의 ─────────────────────────────────────────────────────────
 class CollaborativeCallback(transformers.TrainerCallback):
     """
     Trainer에 끼워서 train_step마다 hivemind 옵티마이저로 동기화합니다.
@@ -48,7 +40,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
     def __init__(
         self,
         dht: hivemind.DHT,
-        optimizer: transformers.TrainerCallback,
+        optimizer: Any,
         model: torch.nn.Module,
         local_public_key: bytes,
         statistics_expiration: float,
@@ -72,6 +64,20 @@ class CollaborativeCallback(transformers.TrainerCallback):
         # Trainer 인스턴스가 준비되면 참조를 저장
         if self.trainer is None and 'trainer' in kwargs:
             self.trainer = kwargs['trainer']
+
+
+# ─── NoOpScheduler 정의 ────────────────────────────────────────────────────────
+class NoOpScheduler(LRSchedulerBase):
+    """
+    Trainer와 함께 넘기지만 실제로 아무 동작도 하지 않는 dummy LR 스케줄러입니다.
+    """
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+
+    def step(self, *args, **kwargs):
+        # 아무 것도 하지 않음
+        return
+
 
 
 def setup_logging(training_args):
