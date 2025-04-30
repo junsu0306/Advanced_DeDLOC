@@ -40,17 +40,21 @@ class NoOpScheduler(LRSchedulerBase):
     Actual scheduling is handled inside CollaborativeOptimizer.
     """
     def __init__(self, optimizer):
-        # Initialize base scheduler to set up internal _last_lr
+        # Initialize base scheduler internals to set up _last_lr
         super().__init__(optimizer)
+        # Set initial last_lr to current optimizer lrs
+        self._last_lr = [group['lr'] for group in optimizer.param_groups]
 
     def step(self, *args, **kwargs):
-        # no operation
+        # no operation, keep last_lr
         return
 
     def state_dict(self):
+        # No state to save
         return {}
 
     def load_state_dict(self, state_dict):
+        # Nothing to load
         pass
 
 class CollaborativeCallback(transformers.TrainerCallback):(transformers.TrainerCallback):
