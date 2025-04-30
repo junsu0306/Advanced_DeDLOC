@@ -206,26 +206,30 @@ def main():
     training_args, dataset_args, collaboration_args = parser.parse_args_into_dataclasses()
     wandb.init()
 
+    # ───────────────────────────────────────────────────────────────────────────
+    # 1) collaboration_args_dict 한 번만 생성하고, 불필요 키 제거
+    collaboration_args_dict = asdict(collaboration_args)
+    for key in ("wandb_project", "use_pairwise"):
+        collaboration_args_dict.pop(key, None)
+    # :contentReference[oaicite:0]{index=0}&#8203;:contentReference[oaicite:1]{index=1}
+    # ───────────────────────────────────────────────────────────────────────────
+
     logger.info(f"Found {len(collaboration_args.initial_peers)} initial peers: {collaboration_args.initial_peers}")
-    if len(collaboration_args.initial_peers) == 0:
+    if not collaboration_args.initial_peers:
         raise ValueError("Please specify at least one network endpoint in initial peers.")
 
-    collaboration_args_dict = asdict(collaboration_args)
-    collaboration_args_dict.pop("wandb_project", None)  # ✅ grpc 에러 방지용 제거
-
     setup_logging(training_args)
-
-    # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    # ALBERT → BERT-tiny 변경
+    # 모델·토크나이저 준비
     config = BertConfig.from_pretrained(dataset_args.config_path, cache_dir=dataset_args.cache_dir)
     tokenizer = BertTokenizerFast.from_pretrained(dataset_args.tokenizer_path, cache_dir=dataset_args.cache_dir)
-    model = get_model(training_args, config, tokenizer)
-    model.to(training_args.device)
+    model = get_model(training_args, config, tokenizer).to(training_args.device)
 
+    # 옵티마이저·스케줄러
     opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
+    # DHT 초기화
     validators, local_public_key = metrics_utils.make_validators(collaboration_args_dict["experiment_prefix"])
     dht = hivemind.DHT(
         start=True,
@@ -235,23 +239,23 @@ def main():
         endpoint=collaboration_args_dict.pop("endpoint"),
         record_validators=validators,
     )
-    statistics_expiration = collaboration_args_dict.pop("statistics_expiration")
-    total_batch_size_per_step = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
-    adjusted_target_batch_size = collaboration_args_dict.pop("target_batch_size") - collaboration_args_dict.pop(
-        "batch_size_lead"
-    )
 
+    # 파라미터 계산
+    statistics_expiration = collaboration_args_dict.pop("statistics_expiration")
+    total_batch_per_step = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
+    adjusted_target = collaboration_args_dict.pop("target_batch_size") - collaboration_args_dict.pop("batch_size_lead")
+
+    # ─────────── CollaborativeOptimizer 인스턴스화 ───────────
     collaborative_optimizer = hivemind.CollaborativeOptimizer(
         opt=opt,
         dht=dht,
         scheduler=scheduler,
         prefix=collaboration_args_dict.pop("experiment_prefix"),
         compression_type=hivemind.utils.CompressionType.Value(collaboration_args_dict.pop("compression")),
-        batch_size_per_step=total_batch_size_per_step,
+        batch_size_per_step=total_batch_per_step,
         throughput=collaboration_args_dict.pop("bandwidth"),
-        target_batch_size=adjusted_target_batch_size,
+        target_batch_size=adjusted_target,
         client_mode=collaboration_args_dict.pop("client_mode"),
-        use_pairwise=True,
         verbose=True,
         start=True,
         auxiliary=True,
