@@ -32,6 +32,38 @@ from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
 logger = logging.getLogger(__name__)
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
 
+class CollaborativeCallback(transformers.TrainerCallback):
+    """
+    Trainer에 끼워서 train_step마다 hivemind 옵티마이저로 동기화합니다.
+    """
+    def __init__(
+        self,
+        dht: hivemind.DHT,
+        optimizer: transformers.TrainerCallback,
+        model: torch.nn.Module,
+        local_public_key: bytes,
+        statistics_expiration: float,
+        trainer: Trainer | None = None,
+        enable_eval: bool = False,
+    ):
+        super().__init__()
+        self.dht = dht
+        self.optimizer = optimizer
+        self.model = model
+        self.local_public_key = local_public_key
+        self.statistics_expiration = statistics_expiration
+        self.trainer = trainer
+        self.enable_eval = enable_eval
+
+    def on_step_end(self, args, state, control, **kwargs):
+        # 매 train step 후 hivemind 옵티마이저 step
+        self.optimizer.step()
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        # Trainer 인스턴스가 준비되면 참조를 저장
+        if self.trainer is None and 'trainer' in kwargs:
+            self.trainer = kwargs['trainer']
+
 
 def setup_logging(training_args):
     logging.basicConfig(
