@@ -1,5 +1,3 @@
-# file: partial_stale_collaborative.py
-
 import logging
 import torch
 from hivemind.optim.collaborative import CollaborativeOptimizer as BaseCollaborativeOptimizer
@@ -8,36 +6,18 @@ logger = logging.getLogger(__name__)
 
 class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
     """
-    1-step delayed update (Partial Staleness) + optional pairwise fallback optimizer.
-    - Gradients computed at iteration N are applied at iteration N+1.
-    - Falls back to hivemind's pairwise All-Reduce if use_pairwise=True.
+    1-step delayed update (Partial Staleness) + optional pairwise fallback을 구현한 Optimizer.
+    - iteration N에서 계산된 gradient는 apply 안 하고,
+      iteration N+1에서 apply하도록 지연시킵니다.
+    - use_pairwise=True일 때는 hivemind의 pairwise All-Reduce 경로를 탑니다.
     """
-
     def __init__(self, partial_stale: bool = False, *args, **kwargs):
-        # MODIFIED: partial_stale 플래그 저장
-        self.partial_stale = partial_stale
-
-        # MODIFIED: use_pairwise 옵션 추출
+        # 기존: use_pairwise 옵션을 꺼내서 상위 클래스로 전달
         use_pairwise = kwargs.pop("use_pairwise", False)
+        super().__init__(*args, use_pairwise=use_pairwise, **kwargs)
 
-        # opt 인자 추출 (positional 또는 keyword)
-        if args:
-            opt = args[0]
-            args = args[1:]
-        else:
-            opt = kwargs.pop("opt")
-        # dht 인자 추출 (positional 또는 keyword)
-        if args:
-            dht = args[0]
-            args = args[1:]
-        else:
-            dht = kwargs.pop("dht")
-
-        # MODIFIED: BaseCollaborativeOptimizer 초기화
-        super().__init__(opt, dht=dht, use_pairwise=use_pairwise, **kwargs)
-
-        # buffer 초기화
-        self.stale_grad_buffer = None
+        self.partial_stale = partial_stale
+        self.stale_grad_buffer = None  # 이전 iteration에서의 averaged gradient 저장
 
     def step(self, batch_size: int = None, **kwargs):
         """
@@ -70,24 +50,22 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
 
         self.apply_accumulated_grads_ = store_in_buffer
 
-        # super.step() 호출 → averaging + local progress update는 수행하지만,
-        # apply_accumulated_grads_가 store_in_buffer로 대체돼 있어 opt.step() 안 됨
+        # super.step(): averaging + local progress update 수행
         super().step(batch_size=batch_size, **kwargs)
 
         # 원래 함수로 복원
         self.apply_accumulated_grads_ = orig_apply
 
-        # 2) 이전 iteration buffer가 있으면 그걸 apply
+        # 2) 이전 iteration buffer가 있으면 적용
         if self.stale_grad_buffer is not None:
             self._apply_stale_grad(self.stale_grad_buffer)
 
-        # 3) 이번 iteration의 averaged gradient를 buffer에 저장
+        # 3) 이번 iteration 평균 grad를 buffer에 저장
         if local_grads[0] is not None:
             self.stale_grad_buffer = local_grads[0]
         else:
             logger.debug("No grads produced this iteration (maybe no peers or skip).")
 
-        # 실제 반환값은 필요 없으므로 None
         return
 
     def _apply_stale_grad(self, grad_list):
@@ -107,9 +85,9 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
             else:
                 p.grad.copy_(g)
 
-        # delayed apply
+        # 지연된 gradient 적용
         self.opt.step()
 
-        # grad를 None으로 초기화
+        # grad 초기화
         for p in params:
             p.grad = None
