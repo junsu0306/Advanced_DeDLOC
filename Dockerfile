@@ -1,59 +1,38 @@
-FROM nvcr.io/nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
-LABEL maintainer="KAU"
-LABEL repository="Advanced_DeDLOC-Adaptive-averaging"
+FROM nvcr.io/nvidia/cuda:10.2-cudnn8-devel-ubuntu18.04
+LABEL maintainer="Learning@home"
+LABEL repository="hivemind"
 
 WORKDIR /home
-
 # Set en_US.UTF-8 locale by default
-RUN apt-get update && apt-get install -y locales curl wget && \
-    locale-gen en_US.UTF-8 && \
-    update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
 
-ENV LANG=en_US.UTF-8 \
-    LC_ALL=en_US.UTF-8
+# Install packages
+RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
+  build-essential \
+  wget \
+  git \
+  vim \
+  && apt-get clean autoclean && rm -rf /var/lib/apt/lists/{apt,dpkg,cache,log} /tmp/* /var/tmp/*
 
-RUN apt-get update && apt-get install -y git build-essential && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.11.0-1-Linux-x86_64.sh && \
-    bash Miniconda3-py310_23.11.0-1-Linux-x86_64.sh -b -p /opt/conda && \
-    rm Miniconda3-py310_23.11.0-1-Linux-x86_64.sh
-
-
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O install_miniconda.sh && \
+  bash install_miniconda.sh -b -p /opt/conda && rm install_miniconda.sh
 ENV PATH="/opt/conda/bin:${PATH}"
 
-RUN conda install python=3.10 pip && \
+RUN conda install python~=3.8 pip && \
     pip install --no-cache-dir torch torchvision torchaudio && \
+    conda clean --all
+
+COPY requirements.txt hivemind/requirements.txt
+COPY requirements-dev.txt hivemind/requirements-dev.txt
+COPY examples/albert/requirements.txt hivemind/examples/albert/requirements.txt
+RUN pip install --no-cache-dir -r hivemind/requirements.txt && \
+    pip install --no-cache-dir -r hivemind/requirements-dev.txt && \
+    pip install --no-cache-dir -r hivemind/examples/albert/requirements.txt && \
+    rm -rf ~/.cache/pip
+
+COPY . hivemind/
+RUN cd hivemind && \
+    pip install --no-cache-dir .[dev] && \
     conda clean --all && rm -rf ~/.cache/pip
 
-COPY . Advanced_DeDLOC-Adaptive-averaging/
-RUN cd Advanced_DeDLOC-Adaptive-averaging && rm -rf ~/.cache/pip
-
-RUN pip install --upgrade pip
-
-RUN pip install --upgrade pip \
-    && pip install protobuf==3.20.3 grpcio-tools \
-    && git clone https://github.com/WKJ-00/hivemind.git /tmp/hivemind \
-    && python -m grpc_tools.protoc \
-      -I/tmp/hivemind/hivemind/proto \
-      --python_out=/tmp/hivemind/hivemind/proto \
-      --grpc_python_out=/tmp/hivemind/hivemind/proto \
-     /tmp/hivemind/hivemind/proto/*.proto \
-    && pip install /tmp/hivemind \
-    && rm -rf /tmp/hivemind \
-    && pip install 'accelerate>=0.26.0' \
-    && pip install 'transformers[torch]' \
-    && pip install --upgrade "pydantic<2.0" \
-    && pip install numpy==1.26.4 --force-reinstall \
-    && pip install --upgrade "wandb==0.12.21" \
-    && pip install nltk
-
-RUN python -m nltk.downloader punkt \
-    && python -m nltk.downloader punkt_tab \
-    && python -m nltk.downloader wordnet \
-    && python -m nltk.downloader omw-1.4
-
-CMD ["bash"]
+CMD bash
