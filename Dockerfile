@@ -37,18 +37,21 @@ RUN pip install --upgrade pip
 RUN pip install --upgrade pip \
     && pip install protobuf==3.20.3 grpcio-tools \
     && git clone https://github.com/WKJ-00/hivemind.git /tmp/hivemind \
+    && cd /tmp/hivemind \
     && python -m grpc_tools.protoc \
-      -I/tmp/hivemind/hivemind/proto \
-      --python_out=/tmp/hivemind/hivemind/proto \
-      --grpc_python_out=/tmp/hivemind/hivemind/proto \
-     /tmp/hivemind/hivemind/proto/*.proto \
-    && pip install /tmp/hivemind \
+         -I./hivemind/proto \
+         --python_out=./hivemind/proto \
+         --grpc_python_out=./hivemind/proto \
+         hivemind/proto/*.proto \
+    && pip uninstall -y hivemind \
+    && pip install . \
+    && cd / \
     && rm -rf /tmp/hivemind \
     && pip install 'accelerate>=0.26.0' \
     && pip install 'transformers[torch]' \
-    && pip install --upgrade "pydantic<2.0" \
+    && pip install --upgrade 'pydantic<2.0' \
     && pip install numpy==1.26.4 --force-reinstall \
-    && pip install --upgrade "wandb==0.12.21" \
+    && pip install wandb==0.12.21 \
     && pip install nltk
 
 RUN python -m nltk.downloader punkt \
