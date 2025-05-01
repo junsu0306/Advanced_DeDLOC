@@ -14,12 +14,26 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
     - use_pairwise=True일 때는 hivemind의 pairwise All-Reduce 경로를 탑니다.
     """
     def __init__(self, partial_stale: bool = False, *args, **kwargs):
-        # use_pairwise 옵션을 꺼내서 상위 클래스로 전달
+        # ======= MODIFIED START: extract and remove use_pairwise flag =======
+        # Extract and remove pairwise fallback option from kwargs
         use_pairwise = kwargs.pop("use_pairwise", False)
-        super().__init__(*args, use_pairwise=use_pairwise, **kwargs)
+        # ======= MODIFIED END: use_pairwise extraction =======
 
-        self.partial_stale = partial_stale
-        self.stale_grad_buffer = None  # 이전 iteration에서의 averaged gradient 저장
+        # ======= MODIFIED START: extract required BaseCollaborativeOptimizer parameters =======
+        try:
+            # Extract the optimizer instance
+            opt = kwargs.pop("opt")
+        except KeyError:
+            raise TypeError("PartialStaleCollaborativeOptimizer requires 'opt' argument")
+        try:
+            # Extract the DHT instance
+            dht = kwargs.pop("dht")
+        except KeyError:
+            raise TypeError("PartialStaleCollaborativeOptimizer requires 'dht' argument")
+        # ======= MODIFIED END: opt and dht extraction =======
+
+        # Initialize base optimizer with correct positional and keyword args
+        super().__init__(opt, dht=dht, use_pairwise=use_pairwise, **kwargs)
 
     def step(self, batch_size: int = None, **kwargs):
         """
