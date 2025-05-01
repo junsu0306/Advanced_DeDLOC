@@ -1,6 +1,6 @@
 FROM nvcr.io/nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 LABEL maintainer="KAU"
-LABEL repository="DeDLOC-BERT-tiny"
+LABEL repository="Advanced_DeDLOC-Adaptive-averaging"
 
 WORKDIR /home
 
@@ -29,13 +29,21 @@ RUN conda install python=3.10 pip && \
     pip install --no-cache-dir torch torchvision torchaudio && \
     conda clean --all && rm -rf ~/.cache/pip
 
-COPY . DeDLOC-BERT-tiny/
-RUN cd DeDLOC-BERT-tiny && rm -rf ~/.cache/pip
+COPY . Advanced_DeDLOC-Adaptive-averaging/
+RUN cd Advanced_DeDLOC-Adaptive-averaging && rm -rf ~/.cache/pip
 
 RUN pip install --upgrade pip
 
-RUN pip install git+https://github.com/WKJ-00/hivemind.git@main#egg=hivemind \
-    && pip install protobuf==3.20.3 \
+RUN pip install --upgrade pip \
+    && pip install protobuf==3.20.3 grpcio-tools \
+    && git clone https://github.com/WKJ-00/hivemind.git /tmp/hivemind \
+    && python -m grpc_tools.protoc \
+      -I/tmp/hivemind/hivemind/proto \
+      --python_out=/tmp/hivemind/hivemind/proto \
+      --grpc_python_out=/tmp/hivemind/hivemind/proto \
+     /tmp/hivemind/hivemind/proto/*.proto \
+    && pip install /tmp/hivemind \
+    && rm -rf /tmp/hivemind \
     && pip install 'accelerate>=0.26.0' \
     && pip install 'transformers[torch]' \
     && pip install --upgrade "pydantic<2.0" \
