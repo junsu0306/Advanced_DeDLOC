@@ -12,6 +12,7 @@ import transformers
 import wandb
 import hivemind
 from hivemind import CollaborativeOptimizer
+from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from transformers import (
