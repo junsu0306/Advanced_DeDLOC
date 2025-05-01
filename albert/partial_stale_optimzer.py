@@ -14,26 +14,35 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
     - use_pairwise=True일 때는 hivemind의 pairwise All-Reduce 경로를 탑니다.
     """
     def __init__(self, partial_stale: bool = False, *args, **kwargs):
-        # ======= MODIFIED START: extract and remove use_pairwise flag =======
-        # Extract and remove pairwise fallback option from kwargs
-        use_pairwise = kwargs.pop("use_pairwise", False)
-        # ======= MODIFIED END: use_pairwise extraction =======
+        # ===== Preserve partial_stale flag for step logic =====
+        self.partial_stale = partial_stale
 
-        # ======= MODIFIED START: extract required BaseCollaborativeOptimizer parameters =======
-        try:
-            # Extract the optimizer instance
+        # ===== Extract pairwise fallback option =====
+        use_pairwise = kwargs.pop("use_pairwise", True)
+
+        # ===== Determine optimizer instance =====
+        if args:
+            opt = args[0]
+            args = args[1:]
+        elif "opt" in kwargs:
             opt = kwargs.pop("opt")
-        except KeyError:
+        else:
             raise TypeError("PartialStaleCollaborativeOptimizer requires 'opt' argument")
-        try:
-            # Extract the DHT instance
-            dht = kwargs.pop("dht")
-        except KeyError:
-            raise TypeError("PartialStaleCollaborativeOptimizer requires 'dht' argument")
-        # ======= MODIFIED END: opt and dht extraction =======
 
-        # Initialize base optimizer with correct positional and keyword args
+        # ===== Determine DHT instance =====
+        if args:
+            dht = args[0]
+            args = args[1:]
+        elif "dht" in kwargs:
+            dht = kwargs.pop("dht")
+        else:
+            raise TypeError("PartialStaleCollaborativeOptimizer requires 'dht' argument")
+
+        # ===== Initialize base CollaborativeOptimizer =====
         super().__init__(opt, dht=dht, use_pairwise=use_pairwise, **kwargs)
+
+        # Buffer for storing stale gradients
+        self.stale_grad_buffer = None
 
     def step(self, batch_size: int = None, **kwargs):
         """
