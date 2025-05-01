@@ -60,6 +60,7 @@ class DHTProtocol(dht_grpc.DHTServicer):
 
         if listen:  # set up server to process incoming rpc requests
             grpc.aio.init_grpc_aio()
+            kwargs.pop("client_mode", None)
             self.server = grpc.aio.server(**kwargs, options=GRPC_KEEPALIVE_OPTIONS)
             servicer = AuthRPCWrapper(self, AuthRole.SERVICER, self.authorizer)
             dht_grpc.add_DHTServicer_to_server(servicer, self.server)
