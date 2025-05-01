@@ -30,7 +30,6 @@ from torch_optimizer import Lamb
 
 from arguments import CollaborationArguments, DatasetArguments, BertTrainingArguments
 import metrics_utils
-from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
 
 logger = logging.getLogger(__name__)
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
@@ -101,14 +100,12 @@ class CollaborativeCallback(transformers.TrainerCallback):
             return control
         self.previous_state = self.get_current_state()
 
-        # accumulate loss and steps
         if state.log_history:
             last_log = state.log_history[-1]
             if "loss" in last_log:
                 self.loss += last_log["loss"]
                 self.steps += 1
 
-        # report metrics once per collaboration step
         local_step = self.collaborative_optimizer.local_step
         if local_step != self.last_reported_collaboration_step:
             self.last_reported_collaboration_step = local_step
@@ -125,10 +122,8 @@ class CollaborativeCallback(transformers.TrainerCallback):
             logger.info(f"Your current contribution: {self.total_samples_processed} samples")
             if self.steps:
                 logger.info(f"Loss of your model: {self.loss/self.steps}")
-            # reset counters
             self.loss = 0.0
             self.steps = 0
-            # store metrics in DHT
             self.dht.store(
                 key=self.collaborative_optimizer.prefix + "_metrics",
                 subkey=self.local_public_key,
@@ -136,7 +131,6 @@ class CollaborativeCallback(transformers.TrainerCallback):
                 expiration_time=hivemind.get_dht_time() + self.statistics_expiration,
                 return_future=True,
             )
-            # optional evaluation
             if not self.enable_eval:
                 logger.debug("🔒 Evaluation disabled (enable_eval=False)")
             elif self.trainer is not None and local_step % self.eval_every == 0:
@@ -150,7 +144,6 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     "eval_subset": idx,
                     "step": local_step,
                 })
-
         self.samples = self.collaborative_optimizer.local_samples_accumulated
         return control
 
@@ -165,10 +158,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
 
     @torch.no_grad()
     def params_are_finite(self) -> bool:
-        for param in self.model.parameters():
-            if not torch.all(torch.isfinite(param)):
-                return False
-        return True
+        return all(torch.all(torch.isfinite(p)) for p in self.model.parameters())
 
 
 def setup_logging(training_args: TrainingArguments):
@@ -206,14 +196,8 @@ def get_model(training_args: TrainingArguments, config: BertConfig, tokenizer: B
 def get_optimizer_and_scheduler(training_args: TrainingArguments, model: torch.nn.Module):
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": training_args.weight_decay,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
+        {"params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)], "weight_decay": training_args.weight_decay},
+        {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
     ]
     opt = Lamb(
         optimizer_grouped_parameters,
@@ -236,61 +220,62 @@ def main():
     parser = HfArgumentParser((BertTrainingArguments, DatasetArguments, CollaborationArguments))
     training_args, dataset_args, collaboration_args = parser.parse_args_into_dataclasses()
 
-    # fp16 설정
+    # fp16 settings
     training_args.fp16 = True
     training_args.fp16_full_eval = True
 
-    # collaboration_args_dict 생성 및 불필요한 키 제거
+    # prepare collaboration_args_dict and extract client_mode
     collaboration_args_dict = asdict(collaboration_args)
-    for key in ("wandb_project", "use_pairwise"):  # use_pairwise는 옵티마이저에서 처리
+    # remove unwanted keys including client_mode to avoid duplicate keyword errors
+    for key in ("wandb_project", "use_pairwise", "client_mode"):
         collaboration_args_dict.pop(key, None)
+    # preserve client_mode flag separately
+    local_client_mode = collaboration_args.client_mode
 
-    # local_public_key 생성 및 wandb 초기화
+    # initialize validators and wandb
     validators, local_public_key = metrics_utils.make_validators(collaboration_args_dict["experiment_prefix"])
     project = collaboration_args.wandb_project or "default-peer-project"
     run_name = f"peer-{local_public_key[:6].hex()}"
     wandb.init(project=project, name=run_name, group="bert-exp-001", reinit=True)
 
-    # 평가 전략 설정
+    # set evaluation strategy
     training_args.evaluation_strategy = "steps" if training_args.enable_eval else "no"
     training_args.eval_steps = 500
     training_args.do_eval = training_args.enable_eval
     training_args.report_to = ["wandb"]
 
-    logger.info(f"Found initial peers: {collaboration_args.initial_peers}")
     if not collaboration_args.initial_peers:
         raise ValueError("Specify at least one initial peer endpoint.")
 
     setup_logging(training_args)
     set_seed(training_args.seed)
 
-    # 모델·토크나이저 준비
+    # model & tokenizer
     config = BertConfig.from_pretrained(dataset_args.config_path, cache_dir=dataset_args.cache_dir)
     tokenizer = BertTokenizerFast.from_pretrained(dataset_args.tokenizer_path, cache_dir=dataset_args.cache_dir)
     model = get_model(training_args, config, tokenizer).to(training_args.device)
 
-    # 데이터셋·데이터콜레이터 준비
+    # datasets & data collator
     datasets = load_from_disk(dataset_args.dataset_path)
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer)
 
-    # 옵티마이저·스케줄러 준비
+    # optimizer & scheduler
     opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
-    # DHT 초기화
+    # DHT initialization
     dht = hivemind.DHT(
         start=True,
         initial_peers=collaboration_args.initial_peers,
-        client_mode=collaboration_args.client_mode,
+        client_mode=local_client_mode,
         record_validators=validators,
     )
 
-    # 배치·메트릭 만
     total_batch_per_step = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
     statistics_expiration = collaboration_args_dict.pop("statistics_expiration")
     target_batch_size = collaboration_args_dict.pop("target_batch_size")
 
-    # partial_stale 분기: True 면 1-step delay 사용, False 면 기본 CollaborativeOptimizer 사용
-    if getattr(training_args, 'partial_stale', False):
+    # ============ Partial Stale 분기 =============
+    if training_args.partial_stale:
         logger.info("Using PartialStaleCollaborativeOptimizer (1-step delay).")
         collaborative_optimizer = PartialStaleCollaborativeOptimizer(
             opt,
@@ -299,7 +284,7 @@ def main():
             batch_size_per_step=total_batch_per_step,
             throughput=collaboration_args_dict.pop("bandwidth"),
             target_batch_size=target_batch_size,
-            client_mode=collaboration_args.client_mode,
+            client_mode=local_client_mode,
             verbose=True,
             start=True,
             **collaboration_args_dict,
@@ -313,13 +298,12 @@ def main():
             batch_size_per_step=total_batch_per_step,
             throughput=collaboration_args_dict.pop("bandwidth"),
             target_batch_size=target_batch_size,
-            client_mode=collaboration_args.client_mode,
+            client_mode=local_client_mode,
             verbose=True,
             start=True,
             **collaboration_args_dict,
         )
 
-    # 평가 메트릭 함수 정의
     def compute_metrics_mlm(eval_pred):
         import numpy as np
         logits, labels = eval_pred
@@ -331,13 +315,11 @@ def main():
         total = mask.sum()
         return {"accuracy": float(correct / total) if total > 0 else 0.0}
 
-    # TrainerWithIndependentShuffling 정의
     class TrainerWithIndependentShuffling(Trainer):
         def get_train_dataloader(self) -> DataLoader:
             torch.manual_seed(hash(local_public_key))
             return super().get_train_dataloader()
 
-    # 콜백 및 Trainer 인스턴스화
     callback = CollaborativeCallback(
         dht=dht,
         optimizer=collaborative_optimizer,
@@ -360,14 +342,10 @@ def main():
         compute_metrics=compute_metrics_mlm,
     )
 
-    # 기본 출력 콜백 제거
     trainer.remove_callback(transformers.trainer_callback.PrinterCallback)
     trainer.remove_callback(transformers.trainer_callback.ProgressCallback)
-
-    # Trainer 참조 주입
     callback.trainer = trainer
 
-    # 학습 시작
     if training_args.do_train:
         latest_ckpt = max(Path(training_args.output_dir).glob("checkpoint*"), default=None, key=os.path.getctime)
         trainer.train(model_path=latest_ckpt)
