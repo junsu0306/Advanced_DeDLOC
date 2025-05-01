@@ -8,40 +8,35 @@ logger = logging.getLogger(__name__)
 
 class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
     """
-    1-step delayed update (Partial Staleness) + optional pairwise fallback을 구현한 Optimizer.
-    - iteration N에서 계산된 gradient는 apply 안 하고,
-      iteration N+1에서 apply하도록 지연시킵니다.
-    - use_pairwise=True일 때는 hivemind의 pairwise All-Reduce 경로를 탑니다.
+    1-step delayed update (Partial Staleness) + optional pairwise fallback optimizer.
+    - Gradients computed at iteration N are applied at iteration N+1.
+    - Falls back to hivemind's pairwise All-Reduce if use_pairwise=True.
     """
+
     def __init__(self, partial_stale: bool = False, *args, **kwargs):
-        # ===== Preserve partial_stale flag for step logic =====
+        # MODIFIED: partial_stale 플래그 저장
         self.partial_stale = partial_stale
 
-        # ===== Extract pairwise fallback option =====
-        use_pairwise = kwargs.pop("use_pairwise", True)
+        # MODIFIED: use_pairwise 옵션 추출
+        use_pairwise = kwargs.pop("use_pairwise", False)
 
-        # ===== Determine optimizer instance =====
+        # opt 인자 추출 (positional 또는 keyword)
         if args:
             opt = args[0]
             args = args[1:]
-        elif "opt" in kwargs:
-            opt = kwargs.pop("opt")
         else:
-            raise TypeError("PartialStaleCollaborativeOptimizer requires 'opt' argument")
-
-        # ===== Determine DHT instance =====
+            opt = kwargs.pop("opt")
+        # dht 인자 추출 (positional 또는 keyword)
         if args:
             dht = args[0]
             args = args[1:]
-        elif "dht" in kwargs:
-            dht = kwargs.pop("dht")
         else:
-            raise TypeError("PartialStaleCollaborativeOptimizer requires 'dht' argument")
+            dht = kwargs.pop("dht")
 
-        # ===== Initialize base CollaborativeOptimizer =====
+        # MODIFIED: BaseCollaborativeOptimizer 초기화
         super().__init__(opt, dht=dht, use_pairwise=use_pairwise, **kwargs)
 
-        # Buffer for storing stale gradients
+        # buffer 초기화
         self.stale_grad_buffer = None
 
     def step(self, batch_size: int = None, **kwargs):
