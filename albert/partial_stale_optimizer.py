@@ -1,3 +1,5 @@
+# file: partial_stale_collaborative.py
+
 import logging
 import torch
 from hivemind.optim.collaborative import CollaborativeOptimizer as BaseCollaborativeOptimizer
@@ -12,7 +14,7 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
     - use_pairwise=True일 때는 hivemind의 pairwise All-Reduce 경로를 탑니다.
     """
     def __init__(self, partial_stale: bool = False, *args, **kwargs):
-        # 기존: use_pairwise 옵션을 꺼내서 상위 클래스로 전달
+        # use_pairwise 옵션을 꺼내서 상위 클래스로 전달
         use_pairwise = kwargs.pop("use_pairwise", False)
         super().__init__(*args, use_pairwise=use_pairwise, **kwargs)
 
@@ -50,22 +52,24 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
 
         self.apply_accumulated_grads_ = store_in_buffer
 
-        # super.step(): averaging + local progress update 수행
+        # super.step() 호출 → averaging + local progress update는 수행하지만,
+        # apply_accumulated_grads_가 store_in_buffer로 대체돼 있어 opt.step() 안 됨
         super().step(batch_size=batch_size, **kwargs)
 
         # 원래 함수로 복원
         self.apply_accumulated_grads_ = orig_apply
 
-        # 2) 이전 iteration buffer가 있으면 적용
+        # 2) 이전 iteration buffer가 있으면 그걸 apply
         if self.stale_grad_buffer is not None:
             self._apply_stale_grad(self.stale_grad_buffer)
 
-        # 3) 이번 iteration 평균 grad를 buffer에 저장
+        # 3) 이번 iteration의 averaged gradient를 buffer에 저장
         if local_grads[0] is not None:
             self.stale_grad_buffer = local_grads[0]
         else:
             logger.debug("No grads produced this iteration (maybe no peers or skip).")
 
+        # 실제 반환값은 필요 없으므로 None
         return
 
     def _apply_stale_grad(self, grad_list):
@@ -85,9 +89,9 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
             else:
                 p.grad.copy_(g)
 
-        # 지연된 gradient 적용
+        # delayed apply
         self.opt.step()
 
-        # grad 초기화
+        # grad를 None으로 초기화
         for p in params:
             p.grad = None
