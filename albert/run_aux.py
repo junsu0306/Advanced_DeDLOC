@@ -20,7 +20,6 @@ from transformers.trainer_utils import is_main_process
 from torch_optimizer import Lamb
 
 import hivemind
-from partial_stale_optimizer import PartialStaleCollaborativeOptimizer  
 from arguments import CollaborationArguments, DatasetArguments, BertTrainingArguments
 import metrics_utils
 
@@ -247,7 +246,7 @@ def main():
     adjusted_target = collaboration_args_dict.pop("target_batch_size") - collaboration_args_dict.pop("batch_size_lead")
 
     # ─────────── CollaborativeOptimizer 인스턴스화 ───────────
-    collaborative_optimizer = PartialStaleCollaborativeOptimizer(
+    collaborative_optimizer = hivemind.CollaborativeOptimizer(
         opt=opt,
         dht=dht,
         scheduler=scheduler,
@@ -256,8 +255,6 @@ def main():
         batch_size_per_step=total_batch_per_step,
         throughput=collaboration_args_dict.pop("bandwidth"),
         target_batch_size=adjusted_target,
-        use_pairwise=collaboration_args.use_pairwise,     # (변경: pairwise 플래그 전달)
-        partial_stale=training_args.partial_stale,         # (변경: partial_stale 플래그 전달)
         client_mode=collaboration_args_dict.pop("client_mode"),
         verbose=True,
         start=True,
