@@ -14,7 +14,6 @@ from whatsmyip.ip import get_ip
 
 from arguments import BaseTrainingArguments, CollaborativeOptimizerArguments, AveragerArguments
 import hivemind
-from partial_stale_optimizer import PartialStaleCollaborativeOptimizer
 from hivemind.utils.logging import get_logger
 import metrics_utils
 from transformers import BertForMaskedLM, BertConfig
@@ -98,18 +97,17 @@ class CheckpointHandler:
 
         adjusted_target_batch_size = collab_optimizer_args.target_batch_size - collab_optimizer_args.batch_size_lead
 
-        self.collaborative_optimizer = PartialStaleCollaborativeOptimizer(
+        self.collaborative_optimizer = hivemind.CollaborativeOptimizer(
             opt=opt,
             dht=dht,
-            prefix=coordinator_args.experiment_prefix,
+            prefix=experiment_prefix,
             compression_type=hivemind.utils.CompressionType.Value(collab_optimizer_args.compression),
             throughput=collab_optimizer_args.bandwidth,
             target_batch_size=adjusted_target_batch_size,
             client_mode=collab_optimizer_args.client_mode,
             verbose=True,
             start=True,
-            use_pairwise=collab_optimizer_args.use_pairwise,    # (변경: use_pairwise 전달)
-            partial_stale=coordinator_args.partial_stale,       # (변경: partial_stale 전달
+            use_pairwise=True,                     # ← DeDLOC의 pairwise All-Reduce 활성화
             **asdict(averager_args),
         )
         self.previous_timestamp = time.time()
@@ -165,7 +163,7 @@ if __name__ == "__main__":
     dht = hivemind.DHT(
         start=True,
         listen_on=coordinator_args.dht_listen_on,
-        endpoint=coordinator_args.endpoint,
+        endpoint=f"{coordinator_args.address}:*",
         initial_peers=coordinator_args.initial_peers,
         record_validators=validators,
     )
