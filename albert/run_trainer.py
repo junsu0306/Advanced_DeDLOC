@@ -29,10 +29,45 @@ from torch_optimizer import Lamb
 
 from arguments import CollaborationArguments, DatasetArguments, BertTrainingArguments
 import metrics_utils
-from partial_stale_optimzer import PartialStaleCollaborativeOptimizer
+from partial_stale_optimizer import PartialStaleCollaborativeOptimizer
 
 logger = logging.getLogger(__name__)
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
+
+def setup_logging(training_args):
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO if is_main_process(training_args.local_rank) else logging.WARN,
+    )
+
+    # Log on each process the small summary:
+    logger.warning(
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+        + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+    )
+    # Set the verbosity to info of the Transformers logger (on main process only):
+    if is_main_process(training_args.local_rank):
+        transformers.utils.logging.set_verbosity_info()
+        transformers.utils.logging.enable_default_handler()
+        transformers.utils.logging.enable_explicit_format()
+    logger.info("Training/evaluation parameters %s", training_args)
+
+
+def get_model(training_args, config, tokenizer):
+    output_dir = Path(training_args.output_dir)
+    logger.info(f'Checkpoint dir {output_dir}, contents {list(output_dir.glob("checkpoint*"))}')
+    latest_checkpoint_dir = max(output_dir.glob("checkpoint*"), default=None, key=os.path.getctime)
+
+    if latest_checkpoint_dir is not None:
+        logger.info(f"Loading model from {latest_checkpoint_dir}")
+        model = BertForMaskedLM.from_pretrained(latest_checkpoint_dir)
+    else:
+        logger.info(f"Training from scratch")
+        model = BertForMaskedLM(config)
+        model.resize_token_embeddings(len(tokenizer))
+
+    return model
 
 # ─── Dummy LR scheduler to satisfy transformers.Trainer API ─────────────────
 class NoOpScheduler(LRSchedulerBase):
