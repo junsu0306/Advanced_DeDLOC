@@ -78,46 +78,101 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.statistics_expiration = statistics_expiration
         self.trainer = trainer
         self.enable_eval = enable_eval
+        # Partial-stale 모니터링을 위한 상태 초기화
+        self.total_samples_processed = 0
+        self.loss = 0.0
+        self.steps = 0
+        self.last_reported_collaboration_step = -1
+        self.eval_every = 500
 
     def on_step_end(self, args, state, control, **kwargs):
+        # 1) 실제 옵티마이저 스텝 수행
         self.optimizer.step()
+
+        # 2) 로깅 활성화
+        control.should_log = True
+        # 3) 파라미터 유한성 검사
+        if not self.params_are_finite():
+            self.load_from_state(self.previous_state)
+            return control
+        self.previous_state = self.get_current_state()
+
+        # 4) 스텝별 손실 집계
+        if state.log_history:
+            last_log = state.log_history[-1]
+            if "loss" in last_log:
+                self.loss += last_log["loss"]
+                self.steps += 1
+
+        # 5) 로컬 스텝 변화 시 메트릭 보고
+        if self.optimizer.local_step != self.last_reported_collaboration_step:
+            self.last_reported_collaboration_step = self.optimizer.local_step
+            self.total_samples_processed += self.samples
+            samples_per_second = self.optimizer.performance_ema.samples_per_second
+            statistics = metrics_utils.LocalMetrics(
+                step=self.optimizer.local_step,
+                samples_per_second=samples_per_second,
+                samples_accumulated=self.samples,
+                loss=float(self.loss or 0.0),
+                mini_steps=self.steps,
+            )
+            logger.info(f"Step {self.optimizer.local_step}")
+            logger.info(f"Your current contribution: {self.total_samples_processed} samples")
+            if self.steps:
+                logger.info(f"Loss of your model: {self.loss/self.steps}")
+
+            # DHT에 메트릭 저장
+            self.dht.store(
+                key=self.optimizer.prefix + "_metrics",
+                subkey=self.local_public_key,
+                value=statistics.dict(),
+                expiration_time=hivemind.get_dht_time() + self.statistics_expiration,
+                return_future=True,
+            )
+
+            # 주기적 평가
+            if not self.enable_eval:
+                logger.debug("🔒 Evaluation disabled (enable_eval=False)")
+            else:
+                if self.trainer is not None and self.optimizer.local_step % self.eval_every == 0:
+                    idx = random.randint(0, 19)
+                    eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
+                    eval_result = self.trainer.evaluate(eval_dataset=eval_dataset)
+                    logger.info(f"📊 Eval result (subset {idx}): {eval_result}")
+                    wandb.log({
+                        "eval_loss": eval_result.get("eval_loss"),
+                        "eval_accuracy": eval_result.get("eval_accuracy"),
+                        "eval_subset": idx,
+                        "step": self.optimizer.local_step,
+                    })
+
+        # 6) 로컬 샘플 수 갱신
+        self.samples = self.optimizer.local_samples_accumulated
         return control
 
     def on_train_begin(self, args, state, control, **kwargs):
+        # Trainer 인스턴스 주입 후 초기 동기화
         if self.trainer is None and "trainer" in kwargs:
             self.trainer = kwargs["trainer"]
+        logger.warning("Loading state from peers")
+        self.optimizer.load_state_from_peers()
+        return control
 
+    @torch.no_grad()
+    def get_current_state(self) -> dict[str, Any]:
+        return {"model": self.model.state_dict(), "opt": self.optimizer.opt.state_dict()}
 
-def setup_logging(training_args):
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if is_main_process(training_args.local_rank) else logging.WARN,
-    )
-    logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, "
-        f"n_gpu: {training_args.n_gpu}, distributed training: {training_args.local_rank != -1}, "
-        f"16-bits training: {training_args.fp16}"
-    )
-    if is_main_process(training_args.local_rank):
-        transformers.utils.logging.set_verbosity_info()
-        transformers.utils.logging.enable_default_handler()
-        transformers.utils.logging.enable_explicit_format()
-    logger.info("Training/evaluation parameters %s", training_args)
+    @torch.no_grad()
+    def load_from_state(self, state):
+        self.model.load_state_dict(state["model"])
+        self.optimizer.opt.load_state_dict(state["opt"])
 
-
-def get_model(training_args, config, tokenizer):
-    output_dir = Path(training_args.output_dir)
-    logger.info(f"Checkpoint dir {output_dir}, contents {list(output_dir.glob('checkpoint*'))}")
-    latest = max(output_dir.glob("checkpoint*"), default=None, key=os.path.getctime)
-    if latest:
-        logger.info(f"Loading model from {latest}")
-        model = BertForMaskedLM.from_pretrained(latest)
-    else:
-        logger.info("Training from scratch")
-        model = BertForMaskedLM(config)
-        model.resize_token_embeddings(len(tokenizer))
-    return model
+    @torch.no_grad()
+    def params_are_finite(self) -> bool:
+        for param in self.model.parameters():
+            if not torch.all(torch.isfinite(param)):
+                return False
+        return True
 
 
 def get_optimizer_and_scheduler(training_args, model):
