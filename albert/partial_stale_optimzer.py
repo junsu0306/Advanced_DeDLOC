@@ -37,7 +37,9 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
 
         # On step 0, allow regular step to avoid stale buffer issues
         if current_step == 0:
-            logger.info("[PartialStale] Step 0: skipping partial stale logic.")
+            if self._last_step_logged != 0:
+                logger.info("[PartialStale] Step 0: skipping partial stale logic.")
+            self._last_step_logged = 0
             return super().step(batch_size=batch_size, **kwargs)
 
         orig_apply_accum = self.apply_accumulated_grads_
@@ -75,7 +77,7 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
             else:
                 self._apply_stale_grad(self.stale_grad_buffer, delay_steps=delay)
         elif self._last_step_logged != current_step:
-            logger.warning(f"[PartialStale] 🚫 No stale gradient buffer to apply at step {current_step}")
+            logger.debug(f"[PartialStale] 🚫 No stale gradient buffer to apply at step {current_step}")
 
         # Buffer new grad for next step
         if local_grads[0] is not None:
@@ -83,7 +85,7 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
             self.last_applied_step = current_step
         else:
             if self._last_step_logged != current_step:
-                logger.warning(f"[PartialStale] ⚠️ No gradients stored at step {current_step}.")
+                logger.debug(f"[PartialStale] ⚠️ No gradients stored at step {current_step}.")
             # Force dummy step to escape loop
             dummy_params = [p for group in self.opt.param_groups for p in group["params"] if p.requires_grad]
             for p in dummy_params:
