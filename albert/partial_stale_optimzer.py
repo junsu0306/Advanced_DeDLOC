@@ -32,6 +32,13 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
         if not self.partial_stale:
             return super().step(batch_size=batch_size, **kwargs)
 
+        current_step = self.local_step
+
+        # On step 0, allow regular step to avoid stale buffer issues
+        if current_step == 0:
+            logger.info("[PartialStale] Step 0: skipping partial stale logic.")
+            return super().step(batch_size=batch_size, **kwargs)
+
         orig_apply_accum = self.apply_accumulated_grads_
         local_grads = [None]
 
@@ -58,8 +65,6 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
         super().step(batch_size=batch_size, **kwargs)
         self.apply_accumulated_grads_ = orig_apply_accum
 
-        current_step = self.local_step
-
         # Apply stale grad with delay handling
         if self.stale_grad_buffer is not None:
             delay = current_step - self.last_applied_step
@@ -77,6 +82,14 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
             self.last_applied_step = current_step
         else:
             logger.warning(f"[PartialStale] ⚠️ No gradients stored at step {current_step}.")
+            # Force dummy step to escape loop
+            dummy_params = [p for group in self.opt.param_groups for p in group["params"] if p.requires_grad]
+            for p in dummy_params:
+                if p.grad is None:
+                    p.grad = torch.zeros_like(p.data)
+            self.opt.step()
+            for p in dummy_params:
+                p.grad = None
 
         return
 
