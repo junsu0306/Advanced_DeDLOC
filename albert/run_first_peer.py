@@ -17,6 +17,7 @@ import hivemind
 from hivemind.utils.logging import get_logger
 import metrics_utils
 from transformers import BertForMaskedLM, BertConfig
+from transformers import BertTokenizerFast
 
 logger = get_logger(__name__)
 
@@ -73,6 +74,8 @@ class CheckpointHandler:
 
         config = BertConfig.from_pretrained(coordinator_args.model_config_path)
         self.model = BertForMaskedLM(config)
+        tokenizer = BertTokenizerFast.from_pretrained("./data/tokenizer_bert_tiny")
+        self.model.resize_token_embeddings(len(tokenizer))
 
 
         no_decay = ["bias", "LayerNorm.weight"]
