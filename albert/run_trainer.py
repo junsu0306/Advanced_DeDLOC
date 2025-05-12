@@ -187,8 +187,18 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     expiration_time=hivemind.get_dht_time() + self.statistics_expiration,
                     return_future=False,
                 )
+                wandb.log({"dht/store_success": 1, "step": statistics.step})
             except Exception as e:
                 logger.warning(f"[DHT Store] Failed to report metrics: {e}")
+                wandb.log({"dht/store_success": 0, "step": statistics.step})
+
+            try:
+                peers = self.dht.get(self.collaborative_optimizer.prefix + "_metrics", latest=True)
+                num_peers = len(peers.value) if peers else 0
+                wandb.log({"dht/active_peers": num_peers, "step": statistics.step})
+            except Exception as e:
+                logger.warning(f"[WandB] Failed to query DHT: {e}")
+                wandb.log({"dht/query_error": 1, "step": statistics.step})
 
             self.loss = 0.0
             self.steps = 0

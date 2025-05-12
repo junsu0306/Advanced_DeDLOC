@@ -1,7 +1,6 @@
 import logging
 import torch
 from hivemind.optim.collaborative import CollaborativeOptimizer as BaseCollaborativeOptimizer
-import hivemind
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +9,6 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
     Partial Staleness Optimizer with:
     - Gradient delay tolerance
     - Gradient clipping
-    - DHT heartbeat for stability
     - Fallback for missing gradients
     - Loss explosion guard
     """
@@ -18,7 +16,6 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
     def __init__(
         self,
         partial_stale: bool = False,
-        heartbeat_interval: int = 100,
         clip_grad_norm: float = 1.0,
         max_loss_threshold: float = 50.0,
         *args,
@@ -28,7 +25,6 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
         self.partial_stale = partial_stale
         self.stale_grad_buffer = None
         self.last_applied_step = -1
-        self.heartbeat_interval = heartbeat_interval
         self.clip_grad_norm = clip_grad_norm
         self.max_loss_threshold = max_loss_threshold
 
@@ -63,20 +59,6 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
         self.apply_accumulated_grads_ = orig_apply_accum
 
         current_step = self.local_step
-
-        # Heartbeat to DHT to maintain active status
-        if current_step % self.heartbeat_interval == 0:
-            try:
-                self.dht.store(
-                    key=f"{self.prefix}_heartbeat",
-                    subkey=self.peer_id,
-                    value={"step": current_step},
-                    expiration_time=hivemind.get_dht_time() + 60,
-                    return_future=False,
-                )
-                logger.debug(f"[DHT] Heartbeat sent at step {current_step}")
-            except Exception as e:
-                logger.warning(f"[DHT] Heartbeat failed: {e}")
 
         # Apply stale grad with delay handling
         if self.stale_grad_buffer is not None:
