@@ -74,7 +74,7 @@ class CheckpointHandler:
 
         config = BertConfig.from_pretrained(coordinator_args.model_config_path)
         self.model = BertForMaskedLM(config)
-        tokenizer = BertTokenizerFast.from_pretrained("./data/tokenizer_bert_tiny")
+        tokenizer = BertTokenizerFast.from_pretrained("./data/tokenizer")
         self.model.resize_token_embeddings(len(tokenizer))
 
 
