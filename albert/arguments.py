@@ -97,7 +97,7 @@ class DatasetArguments:
     )
 
     tokenizer_path: Optional[str] = field(
-        default="data/tokenizer",  # tokenizer도 바꾼 경로로 맞춰주기
+        default="data/tokenizer_bert_tiny",  # tokenizer도 바꾼 경로로 맞춰주기
         metadata={"help": "Path to the tokenizer"},
     )
 
