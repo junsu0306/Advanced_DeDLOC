@@ -135,8 +135,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.previous_state = self.get_current_state()
         self.samples = 0
         self.steps = 0
-        loss=float(self.loss / self.steps) if self.steps > 0 else 0.0
-
+        self.loss = 0.0
         self.total_samples_processed = 0
         self.trainer = trainer
         self.enable_eval = enable_eval
@@ -174,11 +173,13 @@ class CollaborativeCallback(transformers.TrainerCallback):
                 step=self.collaborative_optimizer.local_step,
                 samples_per_second=samples_per_second,
                 samples_accumulated=self.samples,
-                loss=float(self.loss or 0.0),
+                loss=float(self.loss / self.steps) if self.steps > 0 else 0.0,
                 mini_steps=self.steps,
             )
 
-            logger.info(f"[DHT] Step {statistics.step} | avg_loss = {statistics.loss:.4f} | sps = {statistics.samples_per_second:.1f}")
+            logger.info(
+                f"[DHT] Step {statistics.step} | avg_loss = {statistics.loss:.4f} | sps = {statistics.samples_per_second:.1f}"
+            )
 
             try:
                 self.dht.store(
