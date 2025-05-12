@@ -28,6 +28,7 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
         self.clip_grad_norm = clip_grad_norm
         self.max_loss_threshold = max_loss_threshold
         self._last_step_logged = -1  # to throttle logging
+        self._step0_once = False     # to avoid repeating logs in step 0
 
     def step(self, batch_size: int = None, **kwargs):
         if not self.partial_stale:
@@ -37,9 +38,9 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
 
         # On step 0, allow regular step to avoid stale buffer issues
         if current_step == 0:
-            if self._last_step_logged != 0:
+            if not self._step0_once:
                 logger.info("[PartialStale] Step 0: skipping partial stale logic.")
-            self._last_step_logged = 0
+                self._step0_once = True
             return super().step(batch_size=batch_size, **kwargs)
 
         orig_apply_accum = self.apply_accumulated_grads_
@@ -96,6 +97,16 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
                 p.grad = None
 
         self._last_step_logged = current_step
+
+        # Optional: log avg loss from collaborative optimizer metrics
+        if hasattr(self, 'performance_ema') and hasattr(self, 'collaboration_state'):
+            try:
+                stats = self.collaboration_state.local_metrics
+                avg_loss = stats.loss / stats.mini_steps if stats.mini_steps else 0.0
+                logger.info(f"[DHT] Step {current_step} | avg_loss = {avg_loss:.4f} | raw_loss_sum = {stats.loss:.2f} | sps = {stats.samples_per_second:.1f}")
+            except Exception as e:
+                logger.debug(f"[PartialStale] Failed to log avg loss: {e}")
+
         return
 
     def _apply_stale_grad(self, grad_list, delay_steps=1, gamma=0.95):
