@@ -204,11 +204,16 @@ if __name__ == "__main__":
                     num_samples += item.samples_accumulated
                     sum_mini_steps += item.mini_steps
                 current_loss = sum_loss / sum_mini_steps
+                total_loss = sum(item.loss * item.mini_steps for item in metrics)
+                total_mini_steps = sum(item.mini_steps for item in metrics)
+                avg_loss = total_loss / total_mini_steps if total_mini_steps > 0 else 0.0
+
+                
 
                 if coordinator_args.wandb_project is not None:
                     wandb.log(
                         {
-                            "loss": current_loss,
+                             "loss": avg_loss,
                             "alive peers": alive_peers,
                             "samples": num_samples,
                             "performance": sum_perf,
@@ -218,7 +223,7 @@ if __name__ == "__main__":
                 if checkpoint_handler.is_time_to_save_state(current_step):
                     checkpoint_handler.save_state(current_step)
                     if checkpoint_handler.is_time_to_upload():
-                        checkpoint_handler.upload_checkpoint(current_loss)
-                logger.info(f"Step #{current_step}\tloss = {current_loss:.5f}")
+                        checkpoint_handler.upload_checkpoint(avg_loss)
+                logger.info(f"Step #{current_step}\tloss = {avg_loss:.5f}")
         logger.debug("Peer is still alive...")
         time.sleep(coordinator_args.refresh_period)
