@@ -138,7 +138,7 @@ class BertTrainingArguments(TrainingArguments):
 
     #Parital Staleness 추가
     partial_stale: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "If True, uses a 1-step delayed gradient update for partial staleness."}
     )
 
