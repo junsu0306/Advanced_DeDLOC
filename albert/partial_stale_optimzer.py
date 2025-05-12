@@ -27,6 +27,7 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
         self.last_applied_step = -1
         self.clip_grad_norm = clip_grad_norm
         self.max_loss_threshold = max_loss_threshold
+        self._last_step_logged = -1  # to throttle logging
 
     def step(self, batch_size: int = None, **kwargs):
         if not self.partial_stale:
@@ -73,7 +74,7 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
                 self.stale_grad_buffer = None
             else:
                 self._apply_stale_grad(self.stale_grad_buffer, delay_steps=delay)
-        else:
+        elif self._last_step_logged != current_step:
             logger.warning(f"[PartialStale] 🚫 No stale gradient buffer to apply at step {current_step}")
 
         # Buffer new grad for next step
@@ -81,7 +82,8 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
             self.stale_grad_buffer = local_grads[0]
             self.last_applied_step = current_step
         else:
-            logger.warning(f"[PartialStale] ⚠️ No gradients stored at step {current_step}.")
+            if self._last_step_logged != current_step:
+                logger.warning(f"[PartialStale] ⚠️ No gradients stored at step {current_step}.")
             # Force dummy step to escape loop
             dummy_params = [p for group in self.opt.param_groups for p in group["params"] if p.requires_grad]
             for p in dummy_params:
@@ -91,6 +93,7 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
             for p in dummy_params:
                 p.grad = None
 
+        self._last_step_logged = current_step
         return
 
     def _apply_stale_grad(self, grad_list, delay_steps=1, gamma=0.95):
