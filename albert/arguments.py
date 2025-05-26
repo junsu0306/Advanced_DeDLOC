@@ -133,7 +133,7 @@ class BertTrainingArguments(TrainingArguments):
     fp16_opt_level: str = "O2"
     do_train: bool = True
 
-    logging_steps: int = 10
+    logging_steps: int = 50
     save_total_limit: int = 2
     save_steps: int = 500
 
