@@ -139,6 +139,8 @@ class CollaborativeCallback(transformers.TrainerCallback):
                 self.loss += last_log["loss"]
                 self.steps += 1
 
+        self.samples = self.optimizer.local_samples_accumulated
+
         # 5) 로컬 스텝 변화 시 메트릭 보고
         if self.optimizer.local_step != self.last_reported_collaboration_step:
             self.last_reported_collaboration_step = self.optimizer.local_step
@@ -182,7 +184,6 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     })
 
         # 6) 로컬 샘플 수 갱신
-        self.samples = self.optimizer.local_samples_accumulated
         return control
 
     def on_train_begin(self, args, state, control, **kwargs):
@@ -243,8 +244,7 @@ def main():
 
     # collaboration_args_dict 생성 및 불필요한 키 제거 (한 번만!)
     collaboration_args_dict = asdict(collaboration_args)
-    for key in ("wandb_project", "use_pairwise"):
-        collaboration_args_dict.pop(key, None)
+    collaboration_args_dict.pop("wandb_project", None)
 
     # local_public_key 생성 및 wandb 초기화
     validators, local_public_key = metrics_utils.make_validators(collaboration_args_dict["experiment_prefix"])
