@@ -80,14 +80,14 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
         if len(params) != len(grad_list):
             logger.warning("Mismatch between params and buffered grads lengths.")
 
-        # p.grad에 버퍼 복사
+        # p.grad에 버퍼 복사 (detach() 사용)
         for p, g in zip(params, grad_list):
             if g is None:
                 continue
             if p.grad is None:
-                p.grad = g.clone()
+                p.grad = g.detach()
             else:
-                p.grad.copy_(g)
+                p.grad.copy_(g.detach())
 
         # delayed apply
         self.opt.step()
