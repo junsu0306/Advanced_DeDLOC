@@ -206,13 +206,10 @@ def main():
     training_args, dataset_args, collaboration_args = parser.parse_args_into_dataclasses()
     wandb.init()
 
-    # ───────────────────────────────────────────────────────────────────────────
-    # 1) collaboration_args_dict 한 번만 생성하고, 불필요 키 제거
+    # collaboration_args_dict 생성 및 use_pairwise 추출
     collaboration_args_dict = asdict(collaboration_args)
-    for key in ("wandb_project", "use_pairwise"):
-        collaboration_args_dict.pop(key, None)
-    # :contentReference[oaicite:0]{index=0}&#8203;:contentReference[oaicite:1]{index=1}
-    # ───────────────────────────────────────────────────────────────────────────
+    collaboration_args_dict.pop("wandb_project", None)
+    use_pairwise = collaboration_args_dict.pop("use_pairwise", True)  # 기본값을 True로 설정
 
     logger.info(f"Found {len(collaboration_args.initial_peers)} initial peers: {collaboration_args.initial_peers}")
     if not collaboration_args.initial_peers:
@@ -260,6 +257,7 @@ def main():
         start=True,
         auxiliary=True,
         allow_state_sharing=False,
+        use_pairwise=use_pairwise,  # 명시적으로 전달
         **collaboration_args_dict,
     )
 
