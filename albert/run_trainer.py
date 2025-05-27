@@ -242,9 +242,10 @@ def main():
     training_args.fp16 = True
     training_args.fp16_full_eval = True
 
-    # collaboration_args_dict 생성 및 불필요한 키 제거 (한 번만!)
+    # collaboration_args_dict 생성 및 use_pairwise 추출
     collaboration_args_dict = asdict(collaboration_args)
     collaboration_args_dict.pop("wandb_project", None)
+    use_pairwise = collaboration_args_dict.pop("use_pairwise", True)  # 기본값을 True로 설정
 
     # local_public_key 생성 및 wandb 초기화
     validators, local_public_key = metrics_utils.make_validators(collaboration_args_dict["experiment_prefix"])
@@ -294,7 +295,7 @@ def main():
 
     # CollaborativeOptimizer 분기
     if training_args.partial_stale:
-        logger.info("Using PartialStaleCollaborativeOptimizer (1-step delay).")
+        logger.info(f"Using PartialStaleCollaborativeOptimizer (1-step delay) with use_pairwise={use_pairwise}")
         collaborative_optimizer = PartialStaleCollaborativeOptimizer(
             partial_stale=True,
             opt=opt,
@@ -308,10 +309,11 @@ def main():
             client_mode=collaboration_args_dict.pop("client_mode"),
             verbose=True,
             start=True,
+            use_pairwise=use_pairwise,  # 명시적으로 전달
             **collaboration_args_dict,
         )
     else:
-        logger.info("Using normal hivemind.CollaborativeOptimizer.")
+        logger.info(f"Using normal hivemind.CollaborativeOptimizer with use_pairwise={use_pairwise}")
         collaborative_optimizer = hivemind.CollaborativeOptimizer(
             opt=opt,
             dht=dht,
@@ -324,6 +326,7 @@ def main():
             client_mode=collaboration_args_dict.pop("client_mode"),
             verbose=True,
             start=True,
+            use_pairwise=use_pairwise,  # 명시적으로 전달
             **collaboration_args_dict,
         )
 
