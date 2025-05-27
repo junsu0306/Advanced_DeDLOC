@@ -13,13 +13,13 @@ class PartialStaleCollaborativeOptimizer(BaseCollaborativeOptimizer):
       iteration N+1에서 apply하도록 지연시킵니다.
     - use_pairwise=True일 때는 hivemind의 pairwise All-Reduce 경로를 탑니다.
     """
-    def __init__(self, partial_stale: bool = False, *args, **kwargs):
-        # use_pairwise 옵션을 꺼내서 상위 클래스로 전달
-        use_pairwise = kwargs.pop("use_pairwise", False)
+    def __init__(self, partial_stale: bool = False, use_pairwise: bool = True, *args, **kwargs):
+        # use_pairwise를 명시적으로 받아서 상위 클래스로 전달
         super().__init__(*args, use_pairwise=use_pairwise, **kwargs)
 
         self.partial_stale = partial_stale
         self.stale_grad_buffer = None  # 이전 iteration에서의 averaged gradient 저장
+        logger.info(f"PartialStaleCollaborativeOptimizer initialized with use_pairwise={use_pairwise}")
 
     def step(self, batch_size: int = None, **kwargs):
         """
