@@ -123,6 +123,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         local_public_key: bytes,
         statistics_expiration: float,
         trainer=None,  # ✅ 추가
+        enable_eval=True  # ✅ 이 줄 추가
     ):
         super().__init__()
         self.model = model
