@@ -285,6 +285,16 @@ def main():
         **collaboration_args_dict,
     )
 
+    # ✅ wandb 초기화 (trainer 생성 전에!)
+    if hasattr(collaboration_args, "wandb_project") and collaboration_args.wandb_project:
+        wandb.init(
+            project=collaboration_args.wandb_project,
+            name=f"peer-{local_public_key[:6].hex()}",
+            config=asdict(training_args),
+            reinit=True
+        )
+
+
     # 먼저 callback 인스턴스를 만든다
     callback = CollaborativeCallback(
     dht, collaborative_optimizer, model, local_public_key, statistics_expiration,
