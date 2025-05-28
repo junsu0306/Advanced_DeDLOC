@@ -237,7 +237,18 @@ def main():
     if len(collaboration_args.initial_peers) == 0:
         raise ValueError("Please specify at least one network endpoint in initial peers.")
 
+       # ✅ collaboration_args_dict 생성
     collaboration_args_dict = asdict(collaboration_args)
+
+    # ✅ wandb_project는 CollaborativeOptimizer와 무관하므로 제거
+    collaboration_args_dict.pop("wandb_project", None)
+
+    # ✅ local_public_key 생성
+    validators, local_public_key = metrics_utils.make_validators(collaboration_args_dict["experiment_prefix"])
+# ✅ 그 다음 wandb 초기화
+    project_name = collaboration_args.wandb_project or "default-peer-project"
+    run_name = f"peer-{local_public_key[:6].hex()}"
+    
     setup_logging(training_args)
 
     # Set seed before initializing model.
@@ -284,6 +295,30 @@ def main():
         start=True,
         **collaboration_args_dict,
     )
+
+
+    def compute_metrics_mlm(eval_pred):
+        import numpy as np
+        logits, labels = eval_pred
+
+    # ✅ 명확히 GPU에서 CPU로 변환
+        if hasattr(logits, "cpu"):
+            logits = logits.cpu().numpy()
+        if hasattr(labels, "cpu"):
+            labels = labels.cpu().numpy()
+
+        predictions = np.argmax(logits, axis=-1)
+        mask = labels != -100
+        correct = (predictions[mask] == labels[mask]).sum()
+        total = mask.sum()
+        accuracy = correct / total if total > 0 else 0.0
+        return {"accuracy": float(accuracy)}
+
+
+    class TrainerWithIndependentShuffling(Trainer):
+        def get_train_dataloader(self) -> DataLoader:
+            torch.manual_seed(hash(local_public_key))
+            return super().get_train_dataloader()
 
     # ✅ wandb 초기화 (trainer 생성 전에!)
     if hasattr(collaboration_args, "wandb_project") and collaboration_args.wandb_project:
