@@ -138,6 +138,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.total_samples_processed = 0
         self.trainer = trainer  # ✅ 추가
         self.eval_every = 500  # ✅ 원하는 주기로 설정
+        self.enable_eval = enable_eval  # ✅ 이 줄이 반드시 필요함
 
     def on_train_begin(
         self, args: TrainingArguments, state: transformers.TrainerState, control: transformers.TrainerControl, **kwargs
