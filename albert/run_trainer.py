@@ -139,7 +139,15 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.trainer = trainer  # ✅ 추가
         self.eval_every = 500  # ✅ 원하는 주기로 설정
 
-    def on_step_end(self, args, state, control, **kwargs):
+    def on_train_begin(
+        self, args: TrainingArguments, state: transformers.TrainerState, control: transformers.TrainerControl, **kwargs
+    ):
+        logger.warning("Loading state from peers")
+        self.collaborative_optimizer.load_state_from_peers()
+
+    def on_step_end(
+        self, args: TrainingArguments, state: transformers.TrainerState, control: transformers.TrainerControl, **kwargs
+    ):
         control.should_log = True
         if not self.params_are_finite():
             self.load_from_state(self.previous_state)
@@ -147,18 +155,21 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.previous_state = self.get_current_state()
 
         if state.log_history:
-            self.loss += state.log_history[-1]["loss"]
-            self.steps += 1
+            last_log = state.log_history[-1]
+
+            if "loss" in last_log:
+                self.loss += last_log["loss"]
+                self.steps += 1
 
             if self.collaborative_optimizer.local_step != self.last_reported_collaboration_step:
                 self.last_reported_collaboration_step = self.collaborative_optimizer.local_step
                 self.total_samples_processed += self.samples
-
+                samples_per_second = self.collaborative_optimizer.performance_ema.samples_per_second
                 statistics = metrics_utils.LocalMetrics(
                     step=self.collaborative_optimizer.local_step,
-                    samples_per_second=self.collaborative_optimizer.performance_ema.samples_per_second,
+                    samples_per_second=samples_per_second,
                     samples_accumulated=self.samples,
-                    loss=self.loss,
+                    loss=float(self.loss or 0.0),
                     mini_steps=self.steps,
                 )
                 logger.info(f"Step {self.collaborative_optimizer.local_step}")
@@ -166,6 +177,8 @@ class CollaborativeCallback(transformers.TrainerCallback):
                 if self.steps:
                     logger.info(f"Loss of your model: {self.loss/self.steps}")
 
+                self.loss = 0
+                self.steps = 0
                 self.dht.store(
                     key=self.collaborative_optimizer.prefix + "_metrics",
                     subkey=self.local_public_key,
@@ -173,24 +186,28 @@ class CollaborativeCallback(transformers.TrainerCallback):
                     expiration_time=hivemind.get_dht_time() + self.statistics_expiration,
                     return_future=True,
                 )
-                self.loss = 0
-                self.steps = 0
+                 # ✅ 강제 평가: eval_every 스텝마다 수행
+                if not self.enable_eval:
+                    logger.debug("🔒 Evaluation disabled (enable_eval=False)")
+                else:
+                    if self.trainer is not None and self.collaborative_optimizer.local_step % self.eval_every == 0:
+                        idx = random.randint(0, 19)
+                        eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
+                        eval_result = self.trainer.evaluate(eval_dataset=eval_dataset)
+                        logger.info(f"📊 Eval result (subset {idx}): {eval_result}")
 
-                # ✅ evaluation 추가
-                if self.trainer and self.collaborative_optimizer.local_step % self.eval_every == 0:
-                    idx = random.randint(0, 19)
-                    eval_dataset = load_from_disk(f"./eval_subsets/val_split_{idx}")
-                    result = self.trainer.evaluate(eval_dataset=eval_dataset)
-                    wandb.log({
-                        "eval_loss": result.get("eval_loss"),
-                        "eval_accuracy": result.get("eval_accuracy"),
-                        "eval_subset": idx,
-                        "step": self.collaborative_optimizer.local_step,
-                    })
-
+                        wandb.log({
+                            "eval_loss": eval_result.get("eval_loss"),
+                            "eval_accuracy": eval_result.get("eval_accuracy"),
+                            "eval_subset": idx,
+                            "step": self.collaborative_optimizer.local_step,
+                        })
+    
         self.samples = self.collaborative_optimizer.local_samples_accumulated
-        return control
+         # ✅ 여기!
+        # torch.cuda.empty_cache()
 
+        return control
 
     @torch.no_grad()
     def get_current_state(self) -> Dict[str, Any]:
