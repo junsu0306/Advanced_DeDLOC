@@ -86,6 +86,9 @@ class CollaborationArguments(AveragerArguments, CollaborativeOptimizerArguments,
         default=None,
         metadata={"help": "This node's IP for inbound connections, used when running from behind a proxy"},
     )
+    wandb_project: Optional[str] = field(default=None, metadata={"help": "WandB project name"})
+
+
 
 
 @dataclass
