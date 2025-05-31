@@ -5,6 +5,7 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+import time
 
 import random
 import torch
@@ -119,6 +120,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.steps = 0
         self.last_reported_collaboration_step = -1
         self.eval_every = 500
+        self.last_averaging_time = time.time()  # averaging latency 측정을 위한 시간 초기화
 
     def on_step_end(self, args, state, control, **kwargs):
         # 1) 실제 옵티마이저 스텝 수행
@@ -157,6 +159,17 @@ class CollaborativeCallback(transformers.TrainerCallback):
             logger.info(f"Your current contribution: {self.total_samples_processed} samples")
             if self.steps:
                 logger.info(f"Loss of your model: {self.loss/self.steps}")
+
+            # Averaging latency 측정 및 로깅
+            if hasattr(self.optimizer, 'is_synchronized') and self.optimizer.is_synchronized:
+                current_time = time.time()
+                averaging_latency = current_time - self.last_averaging_time
+                self.last_averaging_time = current_time
+                wandb.log({
+                    "averaging_latency": averaging_latency,
+                    "step": self.optimizer.local_step
+                })
+                logger.info(f"Averaging latency: {averaging_latency:.3f} seconds")
 
             # DHT에 메트릭 저장
             self.dht.store(
