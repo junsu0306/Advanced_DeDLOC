@@ -17,6 +17,8 @@ import hivemind
 from hivemind.utils.logging import get_logger
 import metrics_utils
 from transformers import BertForMaskedLM, BertConfig
+from transformers import BitsAndBytesConfig
+from peft import get_peft_model, LoraConfig, TaskType
 
 logger = get_logger(__name__)
 
@@ -72,7 +74,27 @@ class CheckpointHandler:
         self.previous_step = -1
 
         config = BertConfig.from_pretrained(coordinator_args.model_config_path)
-        self.model = BertForMaskedLM(config)
+        bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
+        model = BertForMaskedLM.from_pretrained(
+            "google/bert_uncased_L-2_H-128_A-2",
+            config=config,
+            quantization_config=bnb_cfg,
+            device_map={"": 0}
+        )
+
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=16,
+            lora_dropout=0.1,
+            bias="none",
+            task_type=TaskType.MASKED_LM,
+            target_modules=["query", "value", "intermediate.dense", "output.dense"]
+    )
+        model = get_peft_model(model, lora_config)
+        model.resize_token_embeddings(30522)  # BERT 기본 vocab 크기 또는 tokenizer 크기로 바꿔도 됨
+
+        self.model = model      
+
 
 
         no_decay = ["bias", "LayerNorm.weight"]

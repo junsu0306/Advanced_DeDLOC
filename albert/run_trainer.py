@@ -31,6 +31,11 @@ from arguments import CollaborationArguments, DatasetArguments, BertTrainingArgu
 import metrics_utils
 from partial_stale_optimizer import PartialStaleCollaborativeOptimizer
 
+from transformers import BitsAndBytesConfig, BertForMaskedLM
+from peft import get_peft_model, LoraConfig, TaskType
+
+
+
 logger = logging.getLogger(__name__)
 LRSchedulerBase = getattr(torch.optim.lr_scheduler, "_LRScheduler", None)
 
@@ -55,19 +60,28 @@ def setup_logging(training_args):
 
 
 def get_model(training_args, config, tokenizer):
-    output_dir = Path(training_args.output_dir)
-    logger.info(f'Checkpoint dir {output_dir}, contents {list(output_dir.glob("checkpoint*"))}')
-    latest_checkpoint_dir = max(output_dir.glob("checkpoint*"), default=None, key=os.path.getctime)
+    bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
+    model = BertForMaskedLM.from_pretrained(
+        "google/bert_uncased_L-2_H-128_A-2",
+        quantization_config=bnb_cfg,
+        device_map={"": 0}
+    )
 
-    if latest_checkpoint_dir is not None:
-        logger.info(f"Loading model from {latest_checkpoint_dir}")
-        model = BertForMaskedLM.from_pretrained(latest_checkpoint_dir)
-    else:
-        logger.info(f"Training from scratch")
-        model = BertForMaskedLM(config)
-        model.resize_token_embeddings(len(tokenizer))
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.1,
+        bias="none",
+        task_type=TaskType.MASKED_LM,
+        target_modules=["query", "value", "intermediate.dense", "output.dense"]  # FFN 포함
+    )
+
+    model = get_peft_model(model, lora_config)
+    model.resize_token_embeddings(len(tokenizer))
+    model.print_trainable_parameters()  # 디버깅용
 
     return model
+
 
 # ─── Dummy LR scheduler to satisfy transformers.Trainer API ─────────────────
 class NoOpScheduler(LRSchedulerBase):
@@ -212,26 +226,21 @@ class CollaborativeCallback(transformers.TrainerCallback):
 
 
 def get_optimizer_and_scheduler(training_args, model):
-    no_decay = ["bias", "LayerNorm.weight"]
-    grouped = [
-        {"params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-         "weight_decay": training_args.weight_decay},
-        {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-         "weight_decay": 0.0},
-    ]
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     opt = Lamb(
-        grouped,
+        trainable_params,
         lr=training_args.learning_rate,
         betas=(training_args.adam_beta1, training_args.adam_beta2),
         eps=training_args.adam_epsilon,
         weight_decay=training_args.weight_decay,
-        clamp_value=10000.0,
+        clamp_value=training_args.clamp_value,
         debias=True,
     )
     scheduler = get_linear_schedule_with_warmup(
         opt, num_warmup_steps=training_args.warmup_steps, num_training_steps=training_args.max_steps
     )
     return opt, scheduler
+
 
 
 def main():

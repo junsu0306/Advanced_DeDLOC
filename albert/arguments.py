@@ -150,3 +150,9 @@ class BertTrainingArguments(TrainingArguments):
     default=True,
     metadata={"help": "If False, disables evaluation during training."}
     )
+
+    load_in_8bit: bool = field(
+    default=True,
+    metadata={"help": "If True, loads model weights with bitsandbytes 8-bit quantization"},
+)
+
