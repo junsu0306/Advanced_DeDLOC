@@ -78,9 +78,10 @@ class CollaborativeOptimizerArguments:
         default="FLOAT16", metadata={"help": "Use this compression when averaging parameters/gradients"}
     )
     use_pairwise: bool = field(
-        default=True,
-        metadata={"help": "Enable DeDLOC pairwise All-Reduce fallback (adaptive grouping)"}
+    default=True,
+    metadata={"help": "Use pairwise averaging instead of AllReduce", "aliases": []}
     )
+
 
 
 @dataclass
