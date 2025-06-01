@@ -122,6 +122,9 @@ class CheckpointHandler:
 
         adjusted_target_batch_size = collab_optimizer_args.target_batch_size - collab_optimizer_args.batch_size_lead
 
+        averager_dict = asdict(averager_args)
+        use_pairwise = averager_dict.pop("use_pairwise", True)  # 따로 꺼냄
+
         self.collaborative_optimizer = hivemind.CollaborativeOptimizer(
             opt=opt,
             dht=dht,
@@ -132,9 +135,10 @@ class CheckpointHandler:
             client_mode=collab_optimizer_args.client_mode,
             verbose=True,
             start=True,
-            #use_pairwise=True,                     # argument.py 에 추가가
-            **asdict(averager_args),
+            use_pairwise=use_pairwise,  # ✅ 여기 따로 전달
+            **averager_dict  # ❌ 더 이상 use_pairwise 포함 안 됨
         )
+
         self.previous_timestamp = time.time()
 
     def is_time_to_save_state(self, cur_step):
