@@ -132,7 +132,7 @@ class CheckpointHandler:
             client_mode=collab_optimizer_args.client_mode,
             verbose=True,
             start=True,
-            use_pairwise=True,                     # ← DeDLOC의 pairwise All-Reduce 활성화
+            #use_pairwise=True,                     # argument.py 에 추가가
             **asdict(averager_args),
         )
         self.previous_timestamp = time.time()
