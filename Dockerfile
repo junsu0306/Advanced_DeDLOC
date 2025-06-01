@@ -52,8 +52,8 @@ RUN pip install --upgrade pip \
     && pip install --upgrade 'pydantic<2.0' \
     && pip install numpy==1.26.4 --force-reinstall \
     && pip install wandb==0.12.21 \
-    && pip install nltk
-    && pip install bitsandbytes peft
+    && pip install nltk \
+    && pip install bitsandbytes peft \ 
     && pip install hivemind wandb datasets whatsmyip torch_optimizer
 
 RUN python -m nltk.downloader punkt \
