@@ -52,8 +52,7 @@ class AveragerArguments:
     metadata_expiration: float = field(
         default=30, metadata={"help": "Peer's metadata will be removed if not updated in this many seconds"}
     )
-    use_pairwise: bool = field(default=True, metadata={"help": "Use pairwise averaging instead of AllReduce"})
-
+   
 
 
 @dataclass
@@ -76,6 +75,10 @@ class CollaborativeOptimizerArguments:
     )
     compression: str = field(
         default="FLOAT16", metadata={"help": "Use this compression when averaging parameters/gradients"}
+    )
+    use_pairwise: bool = field(
+        default=True,
+        metadata={"help": "Enable DeDLOC pairwise All-Reduce fallback (adaptive grouping)"}
     )
     
 
