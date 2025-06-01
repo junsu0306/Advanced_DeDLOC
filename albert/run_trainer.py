@@ -72,7 +72,7 @@ def get_model(training_args, config, tokenizer):
         lora_alpha=16,
         lora_dropout=0.1,
         bias="none",
-        task_type=TaskType.MASKED_LM,
+        task_type=TaskType.TOKEN_CLS,
         target_modules=["query", "value", "intermediate.dense", "output.dense"]  # FFN 포함
     )
 
