@@ -109,13 +109,16 @@ class CheckpointHandler:
             },
         ]
 
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+
         opt = Lamb(
-            optimizer_grouped_parameters,
-            lr=0.0005,  # BERT-tiny에 맞게 학습률 조정
+            trainable_params,
+            lr=0.0005,
             weight_decay=0.01,
             clamp_value=10000.0,
             debias=True,
         )
+
 
         adjusted_target_batch_size = collab_optimizer_args.target_batch_size - collab_optimizer_args.batch_size_lead
 
