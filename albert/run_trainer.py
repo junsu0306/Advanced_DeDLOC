@@ -5,6 +5,7 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+import time
 
 import random
 import torch
@@ -133,10 +134,27 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.steps = 0
         self.last_reported_collaboration_step = -1
         self.eval_every = 500
+        # Averaging latency 측정을 위한 변수 추가
+        self.avg_latencies = []
 
     def on_step_end(self, args, state, control, **kwargs):
-        # 1) 실제 옵티마이저 스텝 수행
+        # 1) 실제 옵티마이저 스텝 수행 (averaging 포함)
+        avg_start_time = time.time()
         self.optimizer.step()
+        avg_latency = time.time() - avg_start_time
+        
+        # Averaging latency 기록 및 로깅
+        self.avg_latencies.append(avg_latency)
+        wandb.log({
+            "averaging_latency": avg_latency,
+            "step": self.optimizer.local_step
+        })
+        if len(self.avg_latencies) > 100:
+            self.avg_latencies = self.avg_latencies[-100:]
+        wandb.log({
+            "averaging_latency_ema": sum(self.avg_latencies) / len(self.avg_latencies),
+            "step": self.optimizer.local_step
+        })
 
         # 2) 로깅 활성화
         control.should_log = True
