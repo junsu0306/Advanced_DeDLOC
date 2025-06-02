@@ -114,6 +114,7 @@ class CollaborativeCallback(transformers.TrainerCallback):
         self.steps = 0
         self.loss = 0
         self.total_samples_processed = 0
+        self.avg_latencies = []
 
     def on_train_begin(
         self, args: TrainingArguments, state: transformers.TrainerState, control: transformers.TrainerControl, **kwargs
@@ -124,11 +125,27 @@ class CollaborativeCallback(transformers.TrainerCallback):
     def on_step_end(
         self, args: TrainingArguments, state: transformers.TrainerState, control: transformers.TrainerControl, **kwargs
     ):
+        # Averaging latency 측정
+        avg_start_time = time.time()
         control.should_log = True
         if not self.params_are_finite():
             self.load_from_state(self.previous_state)
             return control
         self.previous_state = self.get_current_state()
+
+        # Averaging latency 기록 및 로깅
+        avg_latency = time.time() - avg_start_time
+        self.avg_latencies.append(avg_latency)
+        wandb.log({
+            "averaging_latency": avg_latency,
+            "step": self.collaborative_optimizer.local_step
+        })
+        if len(self.avg_latencies) > 100:
+            self.avg_latencies = self.avg_latencies[-100:]
+        wandb.log({
+            "averaging_latency_ema": sum(self.avg_latencies) / len(self.avg_latencies),
+            "step": self.collaborative_optimizer.local_step
+        })
 
         if state.log_history:
             self.loss += state.log_history[-1]["loss"]
