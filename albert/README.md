@@ -7,6 +7,7 @@ It uses Hugging Face [datasets](https://github.com/huggingface/datasets) and [tr
 * Install hivemind (see [main README](../README.md))
 * Dependencies: `pip install -r requirements.txt`
 * Preprocess data: `python tokenize_wikitext103.py`
+* subsetting data: `python generate_eval_subset.py`
 * Run the coordinator 
 ```
  HIVEMIND_THREADS=128 python ./run_first_peer.py --dht_listen_on [::]:SOME_PORT  \
