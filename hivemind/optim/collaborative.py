@@ -4,13 +4,13 @@ import logging
 from dataclasses import dataclass
 from threading import Thread, Lock, Event
 from typing import Dict, Optional, Iterator
-import time
 
 import numpy as np
 import torch
 from pydantic import BaseModel, StrictBool, StrictFloat, confloat, conint
 
 from hivemind.client.averaging.training import TrainingAverager
+from hivemind.client.averaging.group_info import GroupInfo
 from hivemind.dht import DHT
 from hivemind.dht.crypto import RSASignatureValidator
 from hivemind.dht.schema import BytesWithPublicKey, SchemaValidator
@@ -60,9 +60,7 @@ class CollaborativeOptimizer(DecentralizedOptimizerBase):
 
     추가 파라미터:
       - use_pairwise: bool = False
-          True로 설정 시, 항상 2-페어(pairwise) 방식으로만 averaging이 수행.
-      - group_creation_interval: int = 1
-          몇 스텝마다 새로운 그룹을 생성할지 지정합니다. 기본값은 1(매 스텝마다).
+          True로 설정 시, 항상 2-페어(pairwise) 방식으로만 averaging이 수행됩니다.
     """
 
     def __init__(self,
@@ -87,7 +85,6 @@ class CollaborativeOptimizer(DecentralizedOptimizerBase):
                  client_mode: bool = False,
                  verbose: bool = False,
                  use_pairwise: bool = True,
-                 group_creation_interval: int = 300, # 기존 step 1 -> 300으로 변경
                  **kwargs):
         super().__init__(opt, dht)
 
@@ -120,10 +117,6 @@ class CollaborativeOptimizer(DecentralizedOptimizerBase):
 
         # **Pairwise** 플래그
         self.use_pairwise = use_pairwise
-        
-        # 그룹 생성 주기 설정
-        self.group_creation_interval = group_creation_interval
-        self.last_group_creation_step = 0
 
         # 내부 변수 초기화
         self._grads = None
@@ -243,23 +236,10 @@ class CollaborativeOptimizer(DecentralizedOptimizerBase):
             if self.collaboration_state.num_peers > 1:
                 mean_samples_per_worker = self.target_batch_size / self.collaboration_state.num_peers
                 weight = self.local_samples_accumulated / mean_samples_per_worker
-                
-                # 그룹 생성 주기 체크
-                current_step = self.averager.local_step
-                should_create_new_group = (current_step - self.last_group_creation_step) >= self.group_creation_interval
-                
                 try:
-                    if should_create_new_group:
-                        group_info = self.averager.step(weight=weight, timeout=self.averaging_timeout, **kwargs)
-                        if group_info:
-                            logger.log(self.status_loglevel, f"Averaged tensors successfully with {len(group_info)} peers")
-                            self.last_group_creation_step = current_step
-                    else:
-                        # 기존 그룹 유지하면서 averaging 수행
-                        group_info = self.averager.step(weight=weight, timeout=self.averaging_timeout, 
-                                                      reuse_existing_group=True, **kwargs)
-                        if group_info:
-                            logger.log(self.status_loglevel, f"Averaged tensors with existing group of {len(group_info)} peers")
+                    group_info = self.averager.step(weight=weight, timeout=self.averaging_timeout, **kwargs)
+                    if group_info:
+                        logger.log(self.status_loglevel, f"Averaged tensors successfully with {len(group_info)} peers")
                 except BaseException as e:
                     logger.log(self.status_loglevel, f"Skipped averaging: averaging round failed with {repr(e)}.")
 
@@ -270,8 +250,8 @@ class CollaborativeOptimizer(DecentralizedOptimizerBase):
             self.opt.step()
             self.reset_accumulated_grads_()
             self.local_samples_accumulated = self.local_steps_accumulated = 0
-            self.averager.local_step = current_step + 1
             self.collaboration_state.register_step(current_step + 1)
+            self.averager.local_step = current_step + 1
             self.collaboration_state_updated.set()
             self.update_scheduler()
 
@@ -461,15 +441,3 @@ class CollaborativeOptimizer(DecentralizedOptimizerBase):
 
     def __del__(self):
         self.shutdown()
-
-    def _is_group_valid(self, group_info: GroupInfo) -> bool:
-        """그룹이 여전히 유효한지 확인"""
-        if group_info is None:
-            return False
-        # 그룹 만료 시간 체크
-        if time.time() > group_info.expiration_time:
-            return False
-        # 그룹 멤버 상태 체크
-        if not all(member.is_alive() for member in group_info.members):
-            return False
-        return True
