@@ -2,13 +2,11 @@ from itertools import chain
 from threading import Lock
 from typing import Sequence, Dict, Iterator, Optional, Any, Tuple
 from contextlib import nullcontext
-import time
 
 import torch
 
 from hivemind.client.averaging import DecentralizedAverager
 from hivemind.utils import nested_flatten, nested_pack, get_logger, run_in_background
-from hivemind.client.averaging.group_info import GroupInfo
 
 logger = get_logger(__name__)
 
@@ -58,45 +56,46 @@ class TrainingAverager(DecentralizedAverager):
             **kwargs,
         )
 
-    async def step(self, weight: float = 1.0, timeout: Optional[float] = None, reuse_existing_group: bool = False, **kwargs) -> Optional[GroupInfo]:
-        """
-        Perform one step of decentralized averaging. This method will:
-        1. Look for a group of peers to average with
-        2. If found, perform all-reduce to compute the average
-        3. Update local parameters with the average
+    @torch.no_grad()
+    def step(
+        self,
+        data_lock: Optional[Lock] = None,
+        wait: bool = True,
+        **kwargs: Any,
+    ) -> Optional[Sequence[torch.Tensor]]:
+        """ Average optimizer weights and gradients with peers. """
+        if not wait:
+            return run_in_background(self.step, data_lock, wait=True, **kwargs)
 
-        :param weight: weight of local parameters in the average (e.g. if you accumulated gradients for 2 batches, weight=2.0)
-        :param timeout: if not None, wait for at most this many seconds
-        :param reuse_existing_group: if True, try to reuse the existing group instead of creating a new one
-        :returns: GroupInfo if averaging was successful, None if no group was found
-        """
-        if not self.is_alive():
-            return None
+        use_old_local = data_lock is not None
+        if data_lock is None:
+            data_lock = nullcontext()
 
-        if timeout is not None:
-            deadline = time.time() + timeout
-        else:
-            deadline = float('inf')
+        local_tensors = list(self.local_tensors())
+        with self.lock_averager_step:
+            # Copy local state into averager buffers
+            with data_lock, self.get_tensors() as averaged_tensors:
+                if use_old_local:
+                    old_local = tuple(x.cpu().float().clone() for x in local_tensors)
+                assert len(local_tensors) == len(averaged_tensors)
+                for av, lt in zip(averaged_tensors, local_tensors):
+                    av[...] = lt.cpu().float()
 
-        if not reuse_existing_group:
-            # 새로운 그룹 찾기
-            group_info = await self.matchmaking.look_for_group(deadline=deadline)
-        else:
-            # 기존 그룹 재사용
-            group_info = self.matchmaking.current_group
-            if group_info is None:
-                logger.warning("No existing group to reuse, creating a new one")
-                group_info = await self.matchmaking.look_for_group(deadline=deadline)
+            # Run decentralized averaging
+            gathered = super().step(**kwargs)
 
-        if group_info is None:
-            return None
+            # Merge back averaged results into local model/optimizer
+            if gathered is not None:
+                with data_lock, self.get_tensors() as averaged_tensors:
+                    if use_old_local:
+                        for av, lt, old in zip(averaged_tensors, local_tensors, old_local):
+                            lt[...] += av.to(dtype=lt.dtype, device=lt.device) - old.to(dtype=lt.dtype, device=lt.device)
+                    else:
+                        for av, lt in zip(averaged_tensors, local_tensors):
+                            lt[...] = av.to(dtype=lt.dtype, device=lt.device)
 
-        try:
-            await self.allreduce(group_info, weight=weight, deadline=deadline)
-            return group_info
-        except Exception as e:
-            logger.warning(f"Averaging failed: {e}")
-            return None
+            self.local_step += 1
+            return gathered
 
     def local_tensors(self, replace_none: bool = True) -> Iterator[torch.Tensor]:
         if self.average_parameters:
