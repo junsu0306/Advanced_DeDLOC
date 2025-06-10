@@ -8,6 +8,8 @@ import torch
 
 from hivemind.client.averaging import DecentralizedAverager
 from hivemind.utils import nested_flatten, nested_pack, get_logger, run_in_background
+# 새로 추가: GroupInfo import 누락으로 인한 NameError 수정
+from hivemind.averaging.group_info import GroupInfo
 
 logger = get_logger(__name__)
 
