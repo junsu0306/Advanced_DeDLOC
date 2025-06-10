@@ -76,7 +76,7 @@ class DecentralizedAverager(
         listen_on: Endpoint = '0.0.0.0:*',
         daemon: bool = True,
         channel_options: Optional[Sequence[Tuple[str, Any]]] = None,
-        probe_size: int = 1024 * 1024,
+        probe_size: int = 512 * 1024,
         **kwargs,
     ):
         super().__init__()
