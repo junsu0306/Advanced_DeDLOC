@@ -4,8 +4,8 @@ LABEL repository="Advanced_DeDLOC-Adaptive-averaging"
 
 WORKDIR /home
 
-# Set en_US.UTF-8 locale by default
-RUN apt-get update && apt-get install -y locales curl wget && \
+# Set en_US.UTF-8 locale by default and install networking tools
+RUN apt-get update && apt-get install -y locales curl wget net-tools iproute2 && \
     locale-gen en_US.UTF-8 && \
     update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 
@@ -39,10 +39,10 @@ RUN pip install --upgrade pip \
     && git clone https://github.com/WKJ-00/hivemind.git /tmp/hivemind \
     && cd /tmp/hivemind \
     && python -m grpc_tools.protoc \
-         -I./hivemind/proto \
-         --python_out=./hivemind/proto \
-         --grpc_python_out=./hivemind/proto \
-         hivemind/proto/*.proto \
+           -I./hivemind/proto \
+           --python_out=./hivemind/proto \
+           --grpc_python_out=./hivemind/proto \
+           hivemind/proto/*.proto \
     && pip uninstall -y hivemind \
     && pip install . \
     && cd / \
@@ -53,7 +53,7 @@ RUN pip install --upgrade pip \
     && pip install numpy==1.26.4 --force-reinstall \
     && pip install wandb==0.12.21 \
     && pip install nltk \
-    && pip install bitsandbytes peft \ 
+    && pip install bitsandbytes peft \
     && pip install hivemind wandb datasets whatsmyip torch_optimizer
 
 RUN python -m nltk.downloader punkt \
