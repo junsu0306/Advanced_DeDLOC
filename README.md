@@ -31,14 +31,6 @@ To start using this library, you can either use the pip package manager or build
 release cycle is not established yet, we recommend installing hivemind from source to keep up with the latest bugfixes
 and improvements.
 
-### With pip
-
-If your versions of Python and PyTorch match the requirements, you can install hivemind from pip:
-
-```
-pip install hivemind
-```
-
 ### From source
 
 To install hivemind from source, simply clone the repository and install
