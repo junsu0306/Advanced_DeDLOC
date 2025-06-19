@@ -36,7 +36,7 @@ and improvements.
 To install hivemind from source, simply clone the repository and install
 
 ```
-git clone https://github.com/learning-at-home/hivemind.git
+git clone https://github.com/WKJ-00/hivemind.git
 cd hivemind
 pip install .
 ```
