@@ -1,2 +1,0 @@
-tokenizers==0.10.3
-datasets==1.7.0

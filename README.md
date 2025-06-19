@@ -1,73 +1,67 @@
-# Distributed Deep Learning in Open Collaborations
+# 💡 QLoRA + Pairwise: Optimized Decentralized Training System
 
-This repository contains the code for the NeurIPS 2021 paper
+This project enhances the [Hivemind](https://github.com/learning-at-home/hivemind)-based decentralized training system **DeDLOC** by integrating two key techniques:
+- **QLoRA**: Quantized Low-Rank Adaptation for efficient fine-tuning
+- **Pairwise averaging**: A robust communication strategy for decentralized peer networks
 
-**"Distributed Deep Learning in Open Collaborations"**
+> ✅ This is the default branch containing the **final merged implementation** of QLoRA and Pairwise.
 
-*Michael Diskin\*, Alexey Bukhtiyarov\*, Max Ryabinin\*, Lucile Saulnier, Quentin Lhoest, Anton Sinitsin, Dmitry Popov,
-Dmitry Pyrkin, Maxim Kashirin, Alexander Borzunov, Albert Villanova del Moral, Denis Mazur, Ilia Kobelev, Yacine
-Jernite, Thomas Wolf, Gennady Pekhimenko*
+---
 
-Link: [ArXiv](https://arxiv.org/abs/2106.10207)
+## 🔧 Key Features
 
-## Note
+### 1. QLoRA Integration (Memory-Efficient Fine-Tuning)
+- Applies 8-bit quantization using `bitsandbytes`  
+- Uses LoRA adapters via the `peft` library to train only a subset of parameters  
+- Reduces GPU memory usage by over **20%**
+- Achieves fast convergence with minimal accuracy loss
 
-This repository contains a snapshot of the code used to conduct experiments in the paper.
+### 2. Pairwise Communication Strategy (Network Robustness)
+- Replaces global all-reduce with **2-peer group-based local averaging**
+- Employs a **Leader–Follower** structure within each group to avoid deadlocks
+- Demonstrated **stable training even when some peers were disconnected**
 
-Please use **[the up-to-date version](https://github.com/learning-at-home/hivemind)** of our library if you want to try out collaborative training and/or set up your own experiment. It contains many substantial improvements, including better documentation and fixed bugs.
+### 3. Integrated Distributed Training Pipeline
+- Docker-based setup with 1 coordinator and multiple workers  
+- Integrated with wandb for live logging of accuracy, loss, memory usage, and throughput  
+- Fine-tuning performed on BERT-Tiny using the WikiText-103 dataset
 
-## Installation
+## 🔀 Other Related Branches
 
-Before running the experiments, please set up the environment by following the steps below:
+- [`hivemind`](https://github.com/your_repo/tree/hivemind):  
+  ➤ Original DeDLOC + Hivemind-only implementation
 
-- Prepare an environment with python __3.7-3.9__. [Anaconda](https://www.anaconda.com/products/individual) is
-  recommended, but not required
-- Install the [hivemind](https://github.com/learning-at-home/hivemind) library from the master branch or by
-  running `pip install hivemind==0.9.9.post1`
+- [`stellatrain`](https://github.com/your_repo/tree/stellatrain):  
+  ➤ Experimental branch for Partial Staleness & compression techniques
 
-For all distributed experiments, the installation procedure must be repeated on every machine that participates in the
-experiment. We recommend using machines with at least 2 CPU cores, 16 GB RAM and, when applicable, a low/mid-tier NVIDIA
-GPU.
+---
 
-## Experiments
+## 📊 Summary of Results
 
-The code is divided into several sections matching the corresponding experiments:
+| Configuration         | Accuracy | Final Loss | GPU Memory | Convergence Time | Key Characteristics                          |
+|-----------------------|----------|------------|-------------|------------------|-----------------------------------------------|
+| Baseline (DeDLOC)     | 0.4155   | 3.91       | ~3.6GB      | 110 hours        | Full training, stable convergence             |
+| QLoRA only            | 0.3973   | 4.13       | ~2.85GB     | 10 hours         | Lightweight fine-tuning, fastest convergence  |
+| QLoRA + Pairwise      | 0.4266   | 4.16       | ~2.9GB      | 70 hours         | Best balance of accuracy, memory & robustness |
 
-- [`albert`](./albert) contains the code for controlled experiments with ALBERT-large on WikiText-103;
-- [`swav`](./swav) is for training SwAV on ImageNet data;
-- [`sahajbert`](./sahajbert) contains the code used to conduct a public collaborative experiment for the Bengali
-  language ALBERT;
-- [`p2p`](./p2p) is a step-by-step tutorial that explains decentralized NAT traversal and circuit relays.
+---
 
-We recommend running [`albert`](./albert) experiments first: other experiments build on top of its code and may reqire
-more careful setup (e.g. for public participation). Furthermore, for this experiment, we
-provide [a script](./albert/AWS_runner.ipynb) for launching experiments using preemptible GPUs in the cloud.
+## 🚀 Quick Start
 
-## Acknowledgements
+```bash
+# 1. [Optional] Create virtual environment
+python -m venv venv
+source venv/bin/activate
 
-This project is the result of a collaboration between
-[Yandex](https://research.yandex.com/), [Hugging Face](https://huggingface.co/), [MIPT](https://mipt.ru/english/),
-[HSE University](https://www.hse.ru/en/), [University of Toronto](https://www.utoronto.ca/),
-[Vector Institute](https://vectorinstitute.ai/), and [Neuropark](https://neuropark.co/).
+# 2. Install dependencies
+pip install -r requirements.txt
 
-We also thank Stas Bekman, Dmitry Abulkhanov, Roman Zhytar, Alexander Ploshkin, Vsevolod Plokhotnyuk and Roman Kail for
-their invaluable help with building the training infrastructure. Also, we thank Abhishek Thakur for helping with
-downstream evaluation and Tanmoy Sarkar with Omar Sanseviero, who helped us organize the collaborative experiment and
-gave regular status updates to the participants over the course of the training run.
+# 3. Prepare dataset and tokenizer
+python tokenize_wikitext103.py
+python generate_eval_subset.py
 
-## Contacts
+# 4. Launch coordinator (first peer)
+python run_first_peer.py
 
-Feel free to ask any questions in [our Discord chat](https://discord.gg/uGugx9zYvN) or [by email](mailto:mryabinin0@gmail.com).
-
-## Citation
-
-```bibtex
-@inproceedings{diskin2021distributed,
-    title = {Distributed Deep Learning In Open Collaborations},
-    author = {Michael Diskin and Alexey Bukhtiyarov and Max Ryabinin and Lucile Saulnier and Quentin Lhoest and Anton Sinitsin and Dmitry Popov and Dmitriy Pyrkin and Maxim Kashirin and Alexander Borzunov and Albert Villanova del Moral and Denis Mazur and Ilia Kobelev and Yacine Jernite and Thomas Wolf and Gennady Pekhimenko},
-    booktitle = {Advances in Neural Information Processing Systems},
-    editor = {A. Beygelzimer and Y. Dauphin and P. Liang and J. Wortman Vaughan},
-    year = {2021},
-    url = {https://openreview.net/forum?id=FYHktcK-7v}
-}
-```
+# 5. Launch worker peers
+python run_trainer.py

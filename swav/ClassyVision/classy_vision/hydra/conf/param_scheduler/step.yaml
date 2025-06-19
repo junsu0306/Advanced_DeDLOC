@@ -1,7 +1,0 @@
-# @package _global_
-config:
-  optimizer:
-    param_schedulers:
-      lr:
-        name: step
-        values: [0.1, 0.01]
