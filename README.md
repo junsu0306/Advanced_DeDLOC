@@ -28,7 +28,7 @@ This project enhances the [Hivemind](https://github.com/learning-at-home/hivemin
 
 ## 🔀 Other Related Branches
 
-- [`hivemind`](https://github.com/your_repo/tree/hivemind):  
+- [`hivemind`](https://github.com/WKJ-00/hivemind):  
   ➤ Original DeDLOC + Hivemind-only implementation
 
 - [`stellatrain`](https://github.com/your_repo/tree/stellatrain):  
