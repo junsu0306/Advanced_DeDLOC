@@ -20,7 +20,8 @@ This project enhances the [Hivemind](https://github.com/learning-at-home/hivemin
 - Replaces global all-reduce with **2-peer group-based local averaging**
 - Employs a **Leader–Follower** structure within each group to avoid deadlocks
 - Demonstrated **stable training even when some peers were disconnected**
-- <img width="296" height="180" alt="image" src="https://github.com/user-attachments/assets/eae65ce4-d5be-455e-b5f7-82e5284693b7" />
+- <img width="863" height="684" alt="image" src="https://github.com/user-attachments/assets/dbe1d8a2-1a80-42e6-ab05-366cb03f02dd" />
+
 
 
 ### 3. Integrated Distributed Training Pipeline
