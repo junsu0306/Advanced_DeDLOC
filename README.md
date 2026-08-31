@@ -47,6 +47,9 @@ This project enhances the [Hivemind](https://github.com/learning-at-home/hivemin
 | QLoRA only            | 0.3973   | 4.13       | ~2.85GB     | 10 hours         | Lightweight fine-tuning, fastest convergence  |
 | QLoRA + Pairwise      | 0.4266   | 4.16       | ~2.9GB      | 70 hours         | Best balance of accuracy, memory & robustness |
 
+<img width="1000" height="600" alt="image" src="https://github.com/user-attachments/assets/ebb4524e-0ab1-4cd0-bbee-4fe00e015e6f" />
+
+
 ---
 
 ## 🚀 Quick Start
